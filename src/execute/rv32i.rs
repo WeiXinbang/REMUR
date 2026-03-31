@@ -34,10 +34,21 @@ pub fn execute(hart: &mut Hart, mem: &mut Memory, inst: Instruction) {
         Instruction::Lbu(i) => { let addr = (hart.read_reg(i.rs1) as i32).wrapping_add(i.imm) as u32; hart.write_reg(i.rd, mem.read8(addr) as u32); hart.pc += 4; }
         Instruction::Lhu(i) => { let addr = (hart.read_reg(i.rs1) as i32).wrapping_add(i.imm) as u32; hart.write_reg(i.rd, mem.read16(addr) as u32); hart.pc += 4; }
 
-        // ===== Store =====
+        // ===== Store（写入时检查 tohost）=====
         Instruction::Sb(s) => { let addr = (hart.read_reg(s.rs1) as i32).wrapping_add(s.imm) as u32; mem.write8(addr, hart.read_reg(s.rs2) as u8); hart.pc += 4; }
         Instruction::Sh(s) => { let addr = (hart.read_reg(s.rs1) as i32).wrapping_add(s.imm) as u32; mem.write16(addr, hart.read_reg(s.rs2) as u16); hart.pc += 4; }
-        Instruction::Sw(s) => { let addr = (hart.read_reg(s.rs1) as i32).wrapping_add(s.imm) as u32; mem.write32(addr, hart.read_reg(s.rs2)); hart.pc += 4; }
+        Instruction::Sw(s) => {
+            let addr = (hart.read_reg(s.rs1) as i32).wrapping_add(s.imm) as u32;
+            let val = hart.read_reg(s.rs2);
+            mem.write32(addr, val);
+            // tohost 检测
+            if let Some(tohost) = hart.tohost_addr {
+                if addr == tohost && val != 0 {
+                    hart.tohost_value = Some(val);
+                }
+            }
+            hart.pc += 4;
+        }
 
         // ===== Branch =====
         Instruction::Beq(b)  => branch(hart, hart.read_reg(b.rs1) == hart.read_reg(b.rs2), b.imm),
@@ -64,16 +75,11 @@ pub fn execute(hart: &mut Hart, mem: &mut Memory, inst: Instruction) {
 
         // ===== System =====
         Instruction::Ecall => {
-            let a7 = hart.read_reg(17);
-            if a7 == 93 {
-                std::process::exit(hart.read_reg(10) as i32);
-            }
-            println!("ECALL at PC=0x{:08x}, a0={}, a7={}", hart.pc, hart.read_reg(10), a7);
-            hart.pc += 4;
+            use crate::cpu::CAUSE_ECALL_M;
+            hart.trap(CAUSE_ECALL_M, 0);
         }
         Instruction::Ebreak => {
-            println!("EBREAK at PC=0x{:08x}", hart.pc);
-            hart.pc += 4;
+            hart.trap(3, hart.pc); // cause=3 (Breakpoint)
         }
         Instruction::Fence => { hart.pc += 4; }
 

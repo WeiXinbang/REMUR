@@ -136,13 +136,32 @@ fn decode_branch(inst: u32) -> Instruction {
 fn decode_system(inst: u32) -> Instruction {
     let f3 = funct3(inst);
     if f3 == 0 {
-        match (inst >> 20) & 0xFFF {
-            0x000 => Instruction::Ecall,
-            0x001 => Instruction::Ebreak,
-            funct12 => panic!("Unknown SYSTEM funct12: 0x{:03x} (inst=0x{:08x})", funct12, inst),
+        // ECALL / EBREAK / MRET / SRET / WFI / SFENCE.VMA
+        let funct7_val = funct7(inst);
+        let rs2_val = rs2(inst);
+        match (funct7_val, rs2_val) {
+            (0x00, 0) => Instruction::Ecall,
+            (0x00, 1) => Instruction::Ebreak,
+            (0x18, 2) => Instruction::Mret,           // funct7=0011000, rs2=00010
+            (0x08, 2) => Instruction::Sret,            // funct7=0001000, rs2=00010
+            (0x08, 5) => Instruction::Wfi,             // funct7=0001000, rs2=00101
+            (0x09, _) => Instruction::SfenceVma {      // funct7=0001001
+                rs1: rs1(inst), rs2: rs2_val,
+            },
+            _ => panic!("Unknown SYSTEM funct7=0x{:02x}, rs2={} (inst=0x{:08x})", funct7_val, rs2_val, inst),
         }
     } else {
-        // CSR 指令 — M2 (Zicsr) 再实现
-        panic!("CSR instructions not yet implemented (inst=0x{:08x})", inst);
+        // CSR 指令: funct3 = 001-011 (reg), 101-111 (imm)
+        let csr_addr = ((inst >> 20) & 0xFFF) as u16;
+        let c = CsrType { rd: rd(inst), rs1: rs1(inst), csr: csr_addr };
+        match f3 {
+            0x1 => Instruction::Csrrw(c),
+            0x2 => Instruction::Csrrs(c),
+            0x3 => Instruction::Csrrc(c),
+            0x5 => Instruction::Csrrwi(c),
+            0x6 => Instruction::Csrrsi(c),
+            0x7 => Instruction::Csrrci(c),
+            _ => panic!("Unknown CSR funct3=0x{:x} (inst=0x{:08x})", f3, inst),
+        }
     }
 }
