@@ -1,4 +1,5 @@
 mod rv32i;
+mod zicsr;
 
 use crate::cpu::Hart;
 use crate::instruction::Instruction;
@@ -7,7 +8,7 @@ use crate::memory::Memory;
 /// 执行一条已解码的指令
 pub fn execute(hart: &mut Hart, mem: &mut Memory, inst: Instruction) {
     match inst {
-        // RV32I 全部交给 rv32i 模块
+        // RV32I
         Instruction::Add(_) | Instruction::Sub(_) | Instruction::Sll(_) |
         Instruction::Slt(_) | Instruction::Sltu(_) | Instruction::Xor(_) |
         Instruction::Srl(_) | Instruction::Sra(_) | Instruction::Or(_) |
@@ -25,8 +26,15 @@ pub fn execute(hart: &mut Hart, mem: &mut Memory, inst: Instruction) {
         Instruction::Ecall | Instruction::Ebreak | Instruction::Fence
             => rv32i::execute(hart, mem, inst),
 
-        // M2 时在这里加:
-        // Instruction::Mul(_) | ... => rv32m::execute(hart, mem, inst),
-        // Instruction::LrW(_) | ... => rv32a::execute(hart, mem, inst),
+        // Zicsr
+        Instruction::Csrrw(_) | Instruction::Csrrs(_) | Instruction::Csrrc(_) |
+        Instruction::Csrrwi(_) | Instruction::Csrrsi(_) | Instruction::Csrrci(_)
+            => zicsr::execute(hart, inst),
+
+        // 特权指令
+        Instruction::Mret => hart.mret(),
+        Instruction::Sret => { hart.pc += 4; } // TODO: 完整实现
+        Instruction::Wfi  => { hart.pc += 4; } // NOP
+        Instruction::SfenceVma { .. } => { hart.pc += 4; } // NOP（无 TLB）
     }
 }

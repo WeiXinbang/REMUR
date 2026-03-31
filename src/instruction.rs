@@ -52,6 +52,14 @@ pub struct ShiftType {
     pub shamt: u32,
 }
 
+/// CSR 指令格式
+#[derive(Debug, Clone, Copy)]
+pub struct CsrType {
+    pub rd: usize,
+    pub rs1: usize, // 寄存器源 或 5 位立即数（uimm）
+    pub csr: u16,    // 12 位 CSR 地址
+}
+
 /// 所有已解码的指令
 #[derive(Debug, Clone, Copy)]
 pub enum Instruction {
@@ -110,4 +118,18 @@ pub enum Instruction {
     Ecall,
     Ebreak,
     Fence,
+
+    // ===== Zicsr: CSR 操作 =====
+    Csrrw(CsrType),
+    Csrrs(CsrType),
+    Csrrc(CsrType),
+    Csrrwi(CsrType),
+    Csrrsi(CsrType),
+    Csrrci(CsrType),
+
+    // ===== 特权指令 =====
+    Mret,
+    Sret,
+    Wfi,
+    SfenceVma { rs1: usize, rs2: usize },
 }
