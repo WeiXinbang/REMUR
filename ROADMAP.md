@@ -1,0 +1,555 @@
+# REMUR — 开发路线图与实现指南
+
+> 本文档描述了从零到启动 Linux 的完整开发路径，每个里程碑都有具体的实现思路。
+
+---
+
+## 总览：开发里程碑
+
+```
+M1: RV32I 骨架       ──→  能跑简单裸机程序（加法、循环）
+M2: 扩展指令集       ──→  RV32M + RV32A + Zicsr + Zifencei
+M3: 特权架构         ──→  M/S/U 模式 + 异常/中断 + Sv32 页表
+M4: SoC 外设         ──→  CLINT + PLIC + UART，串口输出 Hello
+M5: 启动 Linux       ──→  SBI + DTB + 内核加载 → Linux shell
+M6: 调试/测试        ──→  贯穿 M1-M5，itrace/difftest
+M7: 性能优化         ──→  查表译码 + TLB + 基本块缓存 + JIT
+```
+
+---
+
+## M1：RV32I 解释器骨架
+
+### 目标
+- 一个能执行 RV32I 指令的最简模拟器
+- 能加载二进制文件并执行，类似你现在的 minirvEMU.c
+
+### 步骤
+
+#### Step 1.1：创建 Rust 项目
+```bash
+cd YSYX_Practice/REMUR
+cargo init --name remur
+```
+
+项目结构：
+```
+REMUR/
+├── Cargo.toml
+├── FEATURES.md
+├── ROADMAP.md
+└── src/
+    ├── main.rs          # CLI 入口
+    ├── cpu.rs           # Hart 结构体 + 主循环
+    ├── decode.rs        # 指令译码
+    ├── execute.rs       # 指令执行
+    └── memory.rs        # 物理内存
+```
+
+#### Step 1.2：定义核心数据结构
+
+```rust
+// cpu.rs
+pub struct Hart {
+    pub regs: [u32; 32],    // x0-x31
+    pub pc: u32,            // 程序计数器
+    // 后续扩展：csr, privilege_mode, ...
+}
+
+impl Hart {
+    pub fn new() -> Self {
+        Hart {
+            regs: [0; 32],
+            pc: 0,
+        }
+    }
+
+    /// 读寄存器（x0 永远返回 0）
+    pub fn read_reg(&self, idx: usize) -> u32 {
+        if idx == 0 { 0 } else { self.regs[idx] }
+    }
+
+    /// 写寄存器（x0 写入被忽略）
+    pub fn write_reg(&mut self, idx: usize, val: u32) {
+        if idx != 0 {
+            self.regs[idx] = val;
+        }
+    }
+}
+```
+
+```rust
+// memory.rs
+pub struct Memory {
+    data: Vec<u8>,  // 字节寻址
+}
+
+impl Memory {
+    pub fn new(size: usize) -> Self {
+        Memory { data: vec![0; size] }
+    }
+
+    pub fn read8(&self, addr: u32) -> u8 { ... }
+    pub fn read16(&self, addr: u32) -> u16 { ... }  // 小端
+    pub fn read32(&self, addr: u32) -> u32 { ... }  // 小端
+    pub fn write8(&mut self, addr: u32, val: u8) { ... }
+    pub fn write16(&mut self, addr: u32, val: u16) { ... }
+    pub fn write32(&mut self, addr: u32, val: u32) { ... }
+    pub fn load_binary(&mut self, offset: u32, data: &[u8]) { ... }
+}
+```
+
+#### Step 1.3：指令译码
+
+所有 RV32 指令都是 32 位，低 7 位是 opcode。根据 opcode 确定指令格式，然后提取字段。
+
+```rust
+// decode.rs — 指令格式字段提取
+
+/// 从 32 位指令中提取各字段
+pub fn opcode(inst: u32) -> u32 { inst & 0x7F }
+pub fn rd(inst: u32) -> usize { ((inst >> 7) & 0x1F) as usize }
+pub fn funct3(inst: u32) -> u32 { (inst >> 12) & 0x7 }
+pub fn rs1(inst: u32) -> usize { ((inst >> 15) & 0x1F) as usize }
+pub fn rs2(inst: u32) -> usize { ((inst >> 20) & 0x1F) as usize }
+pub fn funct7(inst: u32) -> u32 { (inst >> 25) & 0x7F }
+
+/// I-type 立即数（符号扩展）
+pub fn imm_i(inst: u32) -> i32 { (inst as i32) >> 20 }
+
+/// S-type 立即数
+pub fn imm_s(inst: u32) -> i32 {
+    let lo = (inst >> 7) & 0x1F;
+    let hi = (inst >> 25) & 0x7F;
+    (((hi << 5) | lo) as i32) << 20 >> 20  // 符号扩展 12 位
+}
+
+/// B-type 立即数
+pub fn imm_b(inst: u32) -> i32 {
+    let b11  = (inst >> 7) & 0x1;
+    let b4_1 = (inst >> 8) & 0xF;
+    let b10_5= (inst >> 25) & 0x3F;
+    let b12  = (inst >> 31) & 0x1;
+    let imm = (b12 << 12) | (b11 << 11) | (b10_5 << 5) | (b4_1 << 1);
+    (imm as i32) << 19 >> 19  // 符号扩展 13 位
+}
+
+/// U-type 立即数（已左移 12 位）
+pub fn imm_u(inst: u32) -> u32 { inst & 0xFFFFF000 }
+
+/// J-type 立即数
+pub fn imm_j(inst: u32) -> i32 {
+    let b19_12 = (inst >> 12) & 0xFF;
+    let b11    = (inst >> 20) & 0x1;
+    let b10_1  = (inst >> 21) & 0x3FF;
+    let b20    = (inst >> 31) & 0x1;
+    let imm = (b20 << 20) | (b19_12 << 12) | (b11 << 11) | (b10_1 << 1);
+    (imm as i32) << 11 >> 11  // 符号扩展 21 位
+}
+```
+
+#### Step 1.4：取指–译码–执行主循环
+
+```rust
+// cpu.rs 中的主循环
+impl Hart {
+    pub fn step(&mut self, mem: &mut Memory) {
+        let inst = mem.read32(self.pc);
+        let op = decode::opcode(inst);
+        match op {
+            0b0110011 => self.exec_r_type(inst, mem),    // R-type (ADD/SUB/...)
+            0b0010011 => self.exec_i_type(inst, mem),    // I-type ALU (ADDI/...)
+            0b0000011 => self.exec_load(inst, mem),      // Load (LB/LH/LW/...)
+            0b0100011 => self.exec_store(inst, mem),     // Store (SB/SH/SW)
+            0b1100011 => self.exec_branch(inst, mem),    // Branch (BEQ/BNE/...)
+            0b0110111 => self.exec_lui(inst),            // LUI
+            0b0010111 => self.exec_auipc(inst),          // AUIPC
+            0b1101111 => self.exec_jal(inst),            // JAL
+            0b1100111 => self.exec_jalr(inst, mem),      // JALR
+            0b1110011 => self.exec_system(inst, mem),    // ECALL/EBREAK/CSR
+            0b0001111 => { self.pc += 4; }               // FENCE (NOP)
+            _ => panic!("Unknown opcode: 0b{:07b} at PC=0x{:08x}", op, self.pc),
+        }
+    }
+
+    pub fn run(&mut self, mem: &mut Memory, max_cycles: u64) {
+        for _ in 0..max_cycles {
+            self.step(mem);
+        }
+    }
+}
+```
+
+#### Step 1.5：逐类实现执行函数
+
+以 R-type 为例：
+```rust
+fn exec_r_type(&mut self, inst: u32, _mem: &mut Memory) {
+    let rd = decode::rd(inst);
+    let rs1_val = self.read_reg(decode::rs1(inst));
+    let rs2_val = self.read_reg(decode::rs2(inst));
+    let f3 = decode::funct3(inst);
+    let f7 = decode::funct7(inst);
+
+    let result = match (f3, f7) {
+        (0x0, 0x00) => rs1_val.wrapping_add(rs2_val),       // ADD
+        (0x0, 0x20) => rs1_val.wrapping_sub(rs2_val),       // SUB
+        (0x1, 0x00) => rs1_val << (rs2_val & 0x1F),         // SLL
+        (0x2, 0x00) => ((rs1_val as i32) < (rs2_val as i32)) as u32, // SLT
+        (0x3, 0x00) => (rs1_val < rs2_val) as u32,          // SLTU
+        (0x4, 0x00) => rs1_val ^ rs2_val,                   // XOR
+        (0x5, 0x00) => rs1_val >> (rs2_val & 0x1F),         // SRL
+        (0x5, 0x20) => ((rs1_val as i32) >> (rs2_val & 0x1F)) as u32, // SRA
+        (0x6, 0x00) => rs1_val | rs2_val,                   // OR
+        (0x7, 0x00) => rs1_val & rs2_val,                   // AND
+        _ => panic!("Unknown R-type: f3={}, f7={}", f3, f7),
+    };
+
+    self.write_reg(rd, result);
+    self.pc = self.pc.wrapping_add(4);
+}
+```
+
+#### Step 1.6：main.rs 入口
+
+```rust
+use std::env;
+use std::fs;
+
+mod cpu;
+mod decode;
+mod memory;
+
+fn main() {
+    let args: Vec<String> = env::args().collect();
+    if args.len() != 2 {
+        eprintln!("Usage: remur <binary_file>");
+        std::process::exit(1);
+    }
+
+    let binary = fs::read(&args[1]).expect("Failed to read binary file");
+
+    let mut mem = memory::Memory::new(128 * 1024 * 1024); // 128MB
+    mem.load_binary(0x8000_0000, &binary);
+
+    let mut hart = cpu::Hart::new();
+    hart.pc = 0x8000_0000;
+
+    hart.run(&mut mem, 100_000);
+
+    println!("PC=0x{:08x}", hart.pc);
+    println!("a0(x10)={}", hart.read_reg(10));
+}
+```
+
+### 验证
+- 手写一个简单的 RV32I 汇编程序（如 1+2+...+10），汇编成二进制
+- 用 remur 加载执行，检查 a0 结果是否正确
+
+### 验证工具链准备
+
+运行 riscv-tests 需要 RISC-V 交叉编译工具链。项目通过 WSL 编译测试：
+
+```powershell
+# 1. 在 WSL 中安装交叉编译器（Ubuntu/Debian）
+wsl sudo apt install gcc-riscv64-unknown-elf binutils-riscv64-unknown-elf
+
+# 2. 编译所有 RV32 测试并转为 .bin（在项目根目录执行）
+.\scripts\setup_tests.ps1
+
+# 3. 编译后的二进制文件在 tests\bins\ 下
+#    例如 rv32ui-p-add.bin, rv32ui-p-addi.bin, ...
+
+# 4. 运行测试（实现 cargo test 后）
+cargo test
+```
+
+手动编译单个汇编程序：
+```bash
+# 在 WSL 中
+riscv64-unknown-elf-as -march=rv32i -mabi=ilp32 -o test.o test.S
+riscv64-unknown-elf-ld -T link.ld -m elf32lriscv -o test.elf test.o
+riscv64-unknown-elf-objcopy -O binary test.elf test.bin
+```
+
+---
+
+## M2：扩展指令集
+
+### Step 2.1：RV32M
+在 `exec_r_type` 的 match 中，当 `funct7 == 0x01` 时进入 M 扩展分支：
+```rust
+(f3, 0x01) => match f3 {
+    0x0 => rs1_val.wrapping_mul(rs2_val),                    // MUL
+    0x1 => (((rs1 as i64) * (rs2 as i64)) >> 32) as u32,    // MULH
+    0x2 => (((rs1 as i32 as i64) * (rs2 as u64 as i64)) >> 32) as u32, // MULHSU
+    0x3 => (((rs1 as u64) * (rs2 as u64)) >> 32) as u32,    // MULHU
+    0x4 => if rs2 == 0 { u32::MAX } else { ((rs1 as i32).wrapping_div(rs2 as i32)) as u32 }, // DIV
+    0x5 => if rs2 == 0 { u32::MAX } else { rs1.wrapping_div(rs2) }, // DIVU
+    0x6 => if rs2 == 0 { rs1 } else { ((rs1 as i32).wrapping_rem(rs2 as i32)) as u32 }, // REM
+    0x7 => if rs2 == 0 { rs1 } else { rs1.wrapping_rem(rs2) }, // REMU
+}
+```
+
+### Step 2.2：RV32A
+新增 opcode `0b0101111` (AMO) 处理。关键是 LR/SC 对需要维护一个 reservation set。
+
+### Step 2.3：Zicsr
+在 `exec_system` 中，当 funct3 != 0 时为 CSR 指令。需要新增 CSR 存储。
+
+### 验证
+- 运行 riscv-tests 的 rv32ui、rv32um、rv32ua 测试套件
+
+---
+
+## M3：特权架构
+
+### Step 3.1：特权模式
+在 Hart 中新增 `privilege: u8`（0=U, 1=S, 3=M），复位为 M-mode。
+
+### Step 3.2：CSR 读写权限
+根据 CSR 地址的 [11:10] 位判断最低访问权限，[9:8] 位判断读写属性。
+
+### Step 3.3：异常/中断处理核心流程
+```
+trap 发生时:
+1. 保存当前 PC → mepc/sepc
+2. 保存原因 → mcause/scause
+3. 保存附加信息 → mtval/stval
+4. 保存当前特权级 → mstatus.MPP / mstatus.SPP
+5. 关闭中断 → mstatus.MIE → MPIE, MIE=0
+6. 跳转到 mtvec/stvec
+7. 切换到 M-mode/S-mode
+
+MRET/SRET 时:
+1. 恢复特权级 ← MPP/SPP
+2. 恢复中断使能 ← MPIE/SPIE
+3. PC ← mepc/sepc
+```
+
+### Step 3.4：中断委托
+检查 medeleg/mideleg，决定 trap 交给 M-mode 还是 S-mode 处理。
+
+### Step 3.5：Sv32 页表翻译
+
+```
+虚拟地址 (32-bit): [VPN[1](10) | VPN[0](10) | Offset(12)]
+
+翻译过程:
+1. 从 satp 获取根页表物理地址
+2. PTE_addr = root + VPN[1] * 4
+3. 读取 PTE，检查 V 位
+4. 如果是叶子节点（R|W|X != 0）→ 超级页（4MB）
+5. 否则 PTE_addr = PTE.PPN * 4096 + VPN[0] * 4
+6. 读取 PTE，检查权限 → 得到物理地址
+7. 权限不满足 → 产生页面错误
+```
+
+### 验证
+- 运行 riscv-tests 的 privilege 测试
+- 自己写一个裸机程序测试 M→S 模式切换
+
+---
+
+## M4：SoC 外设（极简方案）
+
+> **设计原则**：只实现 Linux 启动必须的最少外设逻辑，够用就行。
+
+### Step 4.1：总线抽象
+
+```rust
+// bus.rs
+pub trait Device {
+    fn read(&self, addr: u32, size: u8) -> u32;
+    fn write(&mut self, addr: u32, val: u32, size: u8);
+}
+
+pub struct Bus {
+    devices: Vec<(u32, u32, Box<dyn Device>)>,  // (start, end, device)
+}
+```
+
+将 Memory 的直接访问改为通过 Bus 分发。
+
+地址映射：
+| 设备 | 起始地址 | 大小 |
+|------|----------|------|
+| CLINT | 0x0200_0000 | 64KB |
+| PLIC  | 0x0C00_0000 | 64MB |
+| UART0 | 0x1000_0000 | 4KB |
+| RAM   | 0x8000_0000 | 128MB |
+
+### Step 4.2：CLINT（必须完整实现）
+```
+0x0200_0000: msip[0]      (4 bytes) - 软件中断挂起
+0x0200_4000: mtimecmp[0]  (8 bytes) - 定时器比较值
+0x0200_BFF8: mtime        (8 bytes) - 实时计数器
+```
+每个 CPU 周期递增 mtime，mtime >= mtimecmp 时置位 MIP.MTIP。
+
+### Step 4.3：PLIC（极简版，只需 3 个寄存器区域）
+
+只支持 1 个中断源（UART，中断号 10），只有 1 个 context（S-mode Hart 0）。
+
+需要实现的寄存器：
+```
+0x0C00_0028: source 10 priority  (4 bytes) — 写入优先级值即可
+0x0C00_2080: context 0 enable    (4 bytes) — bit10=1 表示使能 UART 中断
+0x0C20_0000: context 0 threshold (4 bytes) — 优先级阈值
+0x0C20_0004: context 0 claim/complete (4 bytes) — 读=claim, 写=complete
+```
+
+> 其余地址读返回 0、写忽略即可。Linux 驱动会探测但不依赖完整实现。
+
+### Step 4.4：UART（极简版，只需 3 个寄存器）
+
+```
++0x00: THR（只写）— 写入时直接 print!("{}", char) 到 host 终端
++0x05: LSR（只读）— 始终返回 0x60（bit5=发送空, bit6=发送完成）
+```
+
+可选（支持键盘输入后再加）：
+```
++0x00: RBR（只读）— 从 stdin 非阻塞读取
++0x01: IER — 中断使能（bit0=接收中断）
++0x05: LSR bit0 — 有数据可读时置 1
+```
+
+> **为什么这么简单就够？** Linux 启动早期通过 SBI `console_putchar` 输出，不走 MMIO。
+> 等内核初始化 earlycon/ttyS0 驱动后才会直接访问 UART 寄存器，而此时只需要能发字符即可。
+
+### 验证
+- 裸机程序通过 MMIO 向 UART 写入 "Hello, REMUR!\n"
+- SBI `console_putchar` 能正常输出字符
+
+---
+
+## M5：启动 Linux
+
+### Step 5.1：内嵌 SBI
+
+M-mode 固件处理 S-mode 的 `ecall`：
+```rust
+fn handle_sbi_call(&mut self, ...) {
+    match (a7, a6) {  // EID, FID
+        (0x01, _) => { /* console_putchar: 输出 a0 */ }
+        (0x02, _) => { /* console_getchar: 读入到 a0 */ }
+        (0x00, _) => { /* set_timer: 设置 mtimecmp */ }
+        (0x08, _) => { /* shutdown */ }
+        (0x54494D45, 0) => { /* Timer: set_timer */ }
+        ...
+    }
+}
+```
+
+### Step 5.2：DTB
+使用现成的 DTB 文件（从 QEMU 或手写 DTS 编译），描述：
+- CPU 信息（rv32ima, mmu-type=sv32）
+- 内存区域
+- CLINT/PLIC/UART 地址
+- bootargs（console=ttyS0）
+- chosen 节点（initrd 地址）
+
+### Step 5.3：启动序列
+
+> **内核格式**：使用 **Linux Image**（`arch/riscv/boot/Image`），这是去掉 ELF 头的纯二进制内核。
+> 不要用 vmlinux（ELF 格式），因为我们没有实现 ELF 加载器。
+> 参考 mini-rv32ima 的做法：直接加载 flat binary 到内存固定地址。
+
+```
+1. 加载 OpenSBI/内嵌SBI 到 0x8000_0000 (M-mode 入口)
+2. 加载 Linux Image 到 0x8020_0000
+3. 加载 DTB 到 0x8200_0000
+4. 加载 initramfs 到 0x8300_0000
+5. Hart 从 0x8000_0000 开始执行 (M-mode)
+6. SBI 初始化 → 跳转到 0x8020_0000 (S-mode)
+   a0 = 0 (hartid), a1 = 0x8200_0000 (DTB 地址)
+7. Linux 内核启动
+```
+
+如何获取这些文件：
+- **OpenSBI**: `make PLATFORM=generic CROSS_COMPILE=riscv64-unknown-elf- FW_JUMP_ADDR=0x80200000`
+- **Linux Image**: 用 buildroot 交叉编译 32 位内核，取 `output/images/Image`
+- **initramfs**: buildroot 生成的 `rootfs.cpio`
+- **DTB**: 手写 `.dts` 后用 `dtc` 编译，或从 QEMU `dumpdtb` 导出再修改
+
+### 验证
+- 看到 Linux 内核打印启动信息
+- 进入 busybox shell
+
+---
+
+## M6：调试工具（贯穿始终）
+
+### itrace
+```rust
+if ITRACE_ENABLED {
+    eprintln!("0x{:08x}: {:08x}  {}", pc, inst, disassemble(inst));
+}
+```
+
+### difftest（可选）
+与 Spike 逐指令对比寄存器状态，一旦不一致立即报错。
+
+---
+
+## M7：性能优化
+
+### 查表译码
+将 `match opcode { match funct3 { match funct7 }}` 替换为：
+```rust
+type ExecFn = fn(&mut Hart, &mut Bus, u32);
+static DISPATCH_TABLE: [ExecFn; 128] = [ ... ]; // 按 opcode 索引
+```
+
+### 基本块缓存
+```rust
+struct BasicBlock {
+    pc: u32,
+    instructions: Vec<DecodedInst>,  // 预译码指令序列
+    next_pc: u32,                     // 块结束后的下一个 PC
+}
+```
+遇到分支/跳转指令时结束当前块，下次执行同一 PC 时直接取缓存。
+
+### TLB
+```rust
+struct TlbEntry {
+    vpn: u32,        // 虚拟页号
+    ppn: u32,        // 物理页号
+    perm: u8,        // 权限位
+    valid: bool,
+}
+// 直接映射: index = vpn % TLB_SIZE
+```
+
+---
+
+## 关键对照：minirvEMU.c → Rust 映射
+
+| C 代码 | Rust 对应 |
+|--------|-----------|
+| `uint32_t R[16]` | `Hart.regs: [u32; 32]`（扩展到 32 个） |
+| `uint32_t M[MEM_SIZE]` | `Memory.data: Vec<u8>`（字节寻址更灵活） |
+| `uint32_t PC` | `Hart.pc: u32` |
+| 全局变量 | 封装在 struct 中（Hart, Memory, Bus） |
+| `switch(opcode)` | `match opcode {}`（Rust 模式匹配） |
+| `M[addr >> 2]` | `mem.read32(addr)`（内部处理字节偏移） |
+| 位运算提取字段 | `decode.rs` 中的辅助函数 |
+| `inst_cycle()` 返回 int | `Hart::step()` 返回 `Result<(), Exception>` |
+
+---
+
+## 推荐参考资料
+
+1. **RISC-V 规范**
+   - [Volume I: Unprivileged Spec](https://riscv.org/specifications/) — 指令集定义
+   - [Volume II: Privileged Spec](https://riscv.org/specifications/privileged-isa/) — 特权架构
+2. **现有实现参考**
+   - [rvemu (Rust)](https://github.com/d0iasm/rvemu) — Rust RV64 模拟器
+   - [riscv-rust (Rust)](https://github.com/takahirox/riscv-rust) — 可跑 Linux 的 RV64
+   - [mini-rv32ima (C)](https://github.com/cnlohr/mini-rv32ima) — 极简 C 实现，可跑 Linux
+3. **riscv-tests**
+   - [官方测试套件](https://github.com/riscv-software-src/riscv-tests)
+4. **SBI 规范**
+   - [RISC-V SBI Specification](https://github.com/riscv-non-isa/riscv-sbi-doc)
