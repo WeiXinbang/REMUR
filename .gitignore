@@ -1,0 +1,12 @@
+# Rust 编译产物
+/target/
+
+# 二进制测试文件（太大，不需要上传）
+*.bin
+tests/bins/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
