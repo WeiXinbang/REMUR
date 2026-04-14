@@ -20,6 +20,25 @@ pub fn execute(hart: &mut Hart, mem: &mut Memory, inst: Instruction) {
                 ROp::Sra  => ((v1 as i32) >> (v2 & 0x1F)) as u32,
                 ROp::Or   => v1 | v2,
                 ROp::And  => v1 & v2,
+                // RV32M
+                ROp::Mul    => v1.wrapping_mul(v2),
+                ROp::Mulh   => (((v1 as i32 as i64).wrapping_mul(v2 as i32 as i64)) >> 32) as u32,
+                ROp::Mulhsu => (((v1 as i32 as i64).wrapping_mul(v2 as u64 as i64)) >> 32) as u32,
+                ROp::Mulhu  => (((v1 as u64).wrapping_mul(v2 as u64)) >> 32) as u32,
+                ROp::Div    => {
+                    let a = v1 as i32; let b = v2 as i32;
+                    if b == 0 { u32::MAX }
+                    else if a == i32::MIN && b == -1 { a as u32 }
+                    else { a.wrapping_div(b) as u32 }
+                }
+                ROp::Divu => if v2 == 0 { u32::MAX } else { v1 / v2 },
+                ROp::Rem  => {
+                    let a = v1 as i32; let b = v2 as i32;
+                    if b == 0 { v1 }
+                    else if a == i32::MIN && b == -1 { 0 }
+                    else { a.wrapping_rem(b) as u32 }
+                }
+                ROp::Remu => if v2 == 0 { v1 } else { v1 % v2 },
             };
             hart.write_reg(rd, result);
             hart.pc += 4;
@@ -131,6 +150,47 @@ pub fn execute(hart: &mut Hart, mem: &mut Memory, inst: Instruction) {
                 CsrOp::Rci => { if rs1 != 0 { hart.write_csr(csr, old & !(rs1 as u32)); } }
             }
             hart.write_reg(rd, old);
+            hart.pc += 4;
+        }
+
+        // ===== RV32A (Atomic) =====
+        Instruction::Amo { op, rd, rs1, rs2, .. } => {
+            let addr = hart.read_reg(rs1);
+            match op {
+                AmoOp::Lr => {
+                    let val = mem.read32(addr);
+                    hart.write_reg(rd, val);
+                    hart.reservation = Some(addr);
+                }
+                AmoOp::Sc => {
+                    if hart.reservation == Some(addr) {
+                        mem.write32(addr, hart.read_reg(rs2));
+                        hart.write_reg(rd, 0); // success
+                    } else {
+                        hart.write_reg(rd, 1); // failure
+                    }
+                    hart.reservation = None;
+                }
+                _ => {
+                    // AMO: rd = mem[rs1]; mem[rs1] = op(mem[rs1], rs2)
+                    let old = mem.read32(addr);
+                    let src = hart.read_reg(rs2);
+                    let result = match op {
+                        AmoOp::Swap => src,
+                        AmoOp::Add  => old.wrapping_add(src),
+                        AmoOp::Xor  => old ^ src,
+                        AmoOp::And  => old & src,
+                        AmoOp::Or   => old | src,
+                        AmoOp::Min  => (old as i32).min(src as i32) as u32,
+                        AmoOp::Max  => (old as i32).max(src as i32) as u32,
+                        AmoOp::Minu => old.min(src),
+                        AmoOp::Maxu => old.max(src),
+                        AmoOp::Lr | AmoOp::Sc => unreachable!(),
+                    };
+                    mem.write32(addr, result);
+                    hart.write_reg(rd, old);
+                }
+            }
             hart.pc += 4;
         }
 

@@ -3,8 +3,8 @@
 #[derive(Debug, Clone, Copy)]
 pub enum ROp {
     Add, Sub, Sll, Slt, Sltu, Xor, Srl, Sra, Or, And,
-    // RV32M（M2 扩展时启用）
-    // Mul, Mulh, Mulhsu, Mulhu, Div, Divu, Rem, Remu,
+    // RV32M
+    Mul, Mulh, Mulhsu, Mulhu, Div, Divu, Rem, Remu,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -25,6 +25,9 @@ pub enum BrOp { Beq, Bne, Blt, Bge, Bltu, Bgeu }
 #[derive(Debug, Clone, Copy)]
 pub enum CsrOp { Rw, Rs, Rc, Rwi, Rsi, Rci }
 
+#[derive(Debug, Clone, Copy)]
+pub enum AmoOp { Lr, Sc, Swap, Add, Xor, And, Or, Min, Max, Minu, Maxu }
+
 // ===== 指令枚举（按格式分组）=====
 
 #[derive(Debug, Clone, Copy)]
@@ -40,6 +43,8 @@ pub enum Instruction {
     Jal   { rd: usize, imm: i32 },
     Jalr  { rd: usize, rs1: usize, imm: i32 },
     Csr   { op: CsrOp,  rd: usize, rs1: usize, csr: u16 },
+    // RV32A
+    Amo   { op: AmoOp,  rd: usize, rs1: usize, rs2: usize, aq: bool, rl: bool },
     Ecall,
     Ebreak,
     Fence,

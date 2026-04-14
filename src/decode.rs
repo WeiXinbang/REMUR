@@ -9,6 +9,7 @@ pub fn decode(inst: u32) -> Instruction {
         0b0000011 => decode_load(inst),
         0b0100011 => decode_store(inst),
         0b1100011 => decode_branch(inst),
+        0b0101111 => decode_amo(inst),
         0b0110111 => Instruction::Lui   { rd: rd(inst), imm: imm_u(inst) },
         0b0010111 => Instruction::Auipc { rd: rd(inst), imm: imm_u(inst) },
         0b1101111 => Instruction::Jal   { rd: rd(inst), imm: imm_j(inst) },
@@ -61,6 +62,15 @@ fn decode_r(inst: u32) -> Instruction {
         (0x5, 0x20) => ROp::Sra,
         (0x6, 0x00) => ROp::Or,
         (0x7, 0x00) => ROp::And,
+        // RV32M (funct7 = 0x01)
+        (0x0, 0x01) => ROp::Mul,
+        (0x1, 0x01) => ROp::Mulh,
+        (0x2, 0x01) => ROp::Mulhsu,
+        (0x3, 0x01) => ROp::Mulhu,
+        (0x4, 0x01) => ROp::Div,
+        (0x5, 0x01) => ROp::Divu,
+        (0x6, 0x01) => ROp::Rem,
+        (0x7, 0x01) => ROp::Remu,
         (f3, f7) => panic!("Unknown R-type: f3={f3:#x}, f7={f7:#x} (inst={inst:#010x})"),
     };
     Instruction::R { op, rd, rs1, rs2 }
@@ -113,6 +123,28 @@ fn decode_branch(inst: u32) -> Instruction {
         f3 => panic!("Unknown branch funct3: {f3:#x} (inst={inst:#010x})"),
     };
     Instruction::Branch { op, rs1, rs2, imm }
+}
+
+fn decode_amo(inst: u32) -> Instruction {
+    let (rd, rs1, rs2) = (rd(inst), rs1(inst), rs2(inst));
+    let funct5 = (inst >> 27) & 0x1F;
+    let aq = ((inst >> 26) & 1) != 0;
+    let rl = ((inst >> 25) & 1) != 0;
+    let op = match funct5 {
+        0x02 => AmoOp::Lr,
+        0x03 => AmoOp::Sc,
+        0x01 => AmoOp::Swap,
+        0x00 => AmoOp::Add,
+        0x04 => AmoOp::Xor,
+        0x0C => AmoOp::And,
+        0x08 => AmoOp::Or,
+        0x10 => AmoOp::Min,
+        0x14 => AmoOp::Max,
+        0x18 => AmoOp::Minu,
+        0x1C => AmoOp::Maxu,
+        f5 => panic!("Unknown AMO funct5={f5:#x} (inst={inst:#010x})"),
+    };
+    Instruction::Amo { op, rd, rs1, rs2, aq, rl }
 }
 
 fn decode_system(inst: u32) -> Instruction {

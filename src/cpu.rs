@@ -35,9 +35,10 @@ pub const CAUSE_ECALL_M: u32 = 11;
 pub struct Hart {
     pub regs: [u32; 32],
     pub pc: u32,
-    pub csrs: [u32; 4096], // CSR 寄存器（按地址索引）
+    pub csrs: [u32; 4096],
     pub tohost_addr: Option<u32>,
     pub tohost_value: Option<u32>,
+    pub reservation: Option<u32>, // LR/SC 保留地址
 }
 
 impl Hart {
@@ -48,6 +49,7 @@ impl Hart {
             csrs: [0; 4096],
             tohost_addr: None,
             tohost_value: None,
+            reservation: None,
         };
         // misa: RV32IMA (bits: I=8, M=12, A=0)
         hart.csrs[MISA as usize] = (1 << 30)  // MXL=1 (32-bit)
