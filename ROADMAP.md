@@ -7,8 +7,8 @@
 ## 总览：开发里程碑
 
 ```
-M1: RV32I 骨架       ──→  能跑简单裸机程序（加法、循环）
-M2: 扩展指令集       ──→  RV32M + RV32A + Zicsr + Zifencei
+M1: RV32I 骨架       ──→  ✅ 能跑简单裸机程序 + riscv-tests 37/37
+M2: 扩展指令集       ──→  ✅ RV32M + RV32A 全部通过 (55/55)
 M3: 特权架构         ──→  M/S/U 模式 + 异常/中断 + Sv32 页表
 M4: SoC 外设         ──→  CLINT + PLIC + UART，串口输出 Hello
 M5: 启动 Linux       ──→  SBI + DTB + 内核加载 → Linux shell
