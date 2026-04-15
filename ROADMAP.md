@@ -10,10 +10,11 @@
 M1: RV32I 骨架       ──→  ✅ 能跑简单裸机程序 + riscv-tests 37/37
 M2: 扩展指令集       ──→  ✅ RV32M + RV32A 全部通过 (55/55)
 M3: 特权架构         ──→  ✅ M/S/U 模式 + 异常委托 + Sv32 页表 (77/77)
-M4: SoC 外设         ──→  CLINT + PLIC + UART，串口输出 Hello
-M5: 启动 Linux       ──→  SBI + DTB + 内核加载 → Linux shell
-M6: 调试/测试        ──→  贯穿 M1-M5，itrace/difftest
-M7: 性能优化         ──→  查表译码 + TLB + 基本块缓存 + JIT
+M4: 性能基准与优化   ──→  criterion benchmark + 查表译码 + 译码缓存 + TLB
+M5: SoC 外设         ──→  CLINT + PLIC + UART，串口输出 Hello
+M6: 启动 Linux       ──→  SBI + DTB + 内核加载 → Linux shell
+M7: 调试/测试        ──→  贯穿 M1-M6，itrace/difftest
+M8: 高级优化（可选） ──→  基本块缓存 + JIT
 ```
 
 ---
@@ -342,11 +343,46 @@ riscv64-unknown-elf-objcopy -O binary test.elf test.bin
 
 ---
 
-## M4：SoC 外设（极简方案）
+## M4：性能基准与优化
+
+### 目标
+- 建立 criterion benchmark 基础设施，量化 MIPS 性能
+- 通过 feature flag 实现可切换优化，支持 A/B 对比
+- 实现查表译码、译码缓存、软件 TLB 等优化
+
+### Step 4.1：Benchmark 基础设施
+- 添加 criterion 依赖
+- 用 riscv-tests 作为固定负载测量 MIPS
+- release profile 调优（LTO、codegen-units=1）
+
+### Step 4.2：Feature Flag 框架
+```toml
+[features]
+default = ["cached-decode", "software-tlb"]
+cached-decode = []
+software-tlb = []
+```
+
+### Step 4.3：查表译码
+用 opcode 做数组索引直接跳转到对应 handler，替代 match 链。
+
+### Step 4.4：译码缓存
+缓存已译码的指令，循环体中跳过重复 decode。
+
+### Step 4.5：软件 TLB
+缓存最近的 VA→PA 映射，减少页表遍历开销。
+
+### 验证
+- benchmark 数据显示优化效果
+- 77/77 测试仍然全部通过
+
+---
+
+## M5：SoC 外设（极简方案）
 
 > **设计原则**：只实现 Linux 启动必须的最少外设逻辑，够用就行。
 
-### Step 4.1：总线抽象
+### Step 5.1：总线抽象
 
 ```rust
 // bus.rs
@@ -370,7 +406,7 @@ pub struct Bus {
 | UART0 | 0x1000_0000 | 4KB |
 | RAM   | 0x8000_0000 | 128MB |
 
-### Step 4.2：CLINT（必须完整实现）
+### Step 5.2：CLINT（必须完整实现）
 ```
 0x0200_0000: msip[0]      (4 bytes) - 软件中断挂起
 0x0200_4000: mtimecmp[0]  (8 bytes) - 定时器比较值
@@ -378,7 +414,7 @@ pub struct Bus {
 ```
 每个 CPU 周期递增 mtime，mtime >= mtimecmp 时置位 MIP.MTIP。
 
-### Step 4.3：PLIC（极简版，只需 3 个寄存器区域）
+### Step 5.3：PLIC（极简版，只需 3 个寄存器区域）
 
 只支持 1 个中断源（UART，中断号 10），只有 1 个 context（S-mode Hart 0）。
 
@@ -392,7 +428,7 @@ pub struct Bus {
 
 > 其余地址读返回 0、写忽略即可。Linux 驱动会探测但不依赖完整实现。
 
-### Step 4.4：UART（极简版，只需 3 个寄存器）
+### Step 5.4：UART（极简版，只需 3 个寄存器）
 
 ```
 +0x00: THR（只写）— 写入时直接 print!("{}", char) 到 host 终端
@@ -415,9 +451,9 @@ pub struct Bus {
 
 ---
 
-## M5：启动 Linux
+## M6：启动 Linux
 
-### Step 5.1：内嵌 SBI
+### Step 6.1：内嵌 SBI
 
 M-mode 固件处理 S-mode 的 `ecall`：
 ```rust
@@ -433,7 +469,7 @@ fn handle_sbi_call(&mut self, ...) {
 }
 ```
 
-### Step 5.2：DTB
+### Step 6.2：DTB
 使用现成的 DTB 文件（从 QEMU 或手写 DTS 编译），描述：
 - CPU 信息（rv32ima, mmu-type=sv32）
 - 内存区域
@@ -441,7 +477,7 @@ fn handle_sbi_call(&mut self, ...) {
 - bootargs（console=ttyS0）
 - chosen 节点（initrd 地址）
 
-### Step 5.3：启动序列
+### Step 6.3：启动序列
 
 > **内核格式**：使用 **Linux Image**（`arch/riscv/boot/Image`），这是去掉 ELF 头的纯二进制内核。
 > 不要用 vmlinux（ELF 格式），因为我们没有实现 ELF 加载器。
@@ -470,7 +506,7 @@ fn handle_sbi_call(&mut self, ...) {
 
 ---
 
-## M6：调试工具（贯穿始终）
+## M7：调试工具（贯穿始终）
 
 ### itrace
 ```rust
@@ -484,14 +520,7 @@ if ITRACE_ENABLED {
 
 ---
 
-## M7：性能优化
-
-### 查表译码
-将 `match opcode { match funct3 { match funct7 }}` 替换为：
-```rust
-type ExecFn = fn(&mut Hart, &mut Bus, u32);
-static DISPATCH_TABLE: [ExecFn; 128] = [ ... ]; // 按 opcode 索引
-```
+## M8：高级优化（可选）
 
 ### 基本块缓存
 ```rust
@@ -503,16 +532,9 @@ struct BasicBlock {
 ```
 遇到分支/跳转指令时结束当前块，下次执行同一 PC 时直接取缓存。
 
-### TLB
-```rust
-struct TlbEntry {
-    vpn: u32,        // 虚拟页号
-    ppn: u32,        // 物理页号
-    perm: u8,        // 权限位
-    valid: bool,
-}
-// 直接映射: index = vpn % TLB_SIZE
-```
+### JIT（Just-In-Time 编译）
+将热点基本块翻译为宿主机原生指令（x86/ARM），跳过解释执行。
+需要运行时代码生成框架（如 cranelift 或手写 assembler）。
 
 ---
 
