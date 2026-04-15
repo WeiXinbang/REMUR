@@ -140,6 +140,9 @@ impl Hart {
             INSTRET  => self.csrs[MINSTRET as usize],
             CYCLEH   => self.csrs[MCYCLEH as usize],
             INSTRETH => self.csrs[MINSTRETH as usize],
+            // Debug trigger：tselect 固定为 0（仅 trigger 0），tdata1 固定为 0（不支持任何触发类型）
+            0x7A0 => 0, // tselect
+            0x7A1 => 0, // tdata1
             _ => self.csrs[addr as usize],
         }
     }

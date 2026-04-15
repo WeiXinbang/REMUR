@@ -23,10 +23,9 @@ macro_rules! riscv_tests_mapped {
     };
 }
 
-// rv32mi 测试：15/16 通过
-// breakpoint — 需要 debug trigger CSR（暂跳过）
+// rv32mi 测试：16/16 全部通过
 riscv_tests! { "rv32mi-p",
-    csr, illegal, instret_overflow,
+    breakpoint, csr, illegal, instret_overflow,
     ma_addr, ma_fetch, mcsr, pmpaddr,
     sbreak, scall, shamt, zicntr,
 }
