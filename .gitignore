@@ -3,6 +3,7 @@
 
 # 二进制测试文件（太大，不需要上传）
 *.bin
+*.elf
 tests/bins/
 
 # IDE
