@@ -1,7 +1,9 @@
 use crate::bus::Bus;
 use crate::cpu::{Hart, CAUSE_ECALL_U, CAUSE_ECALL_S, CAUSE_ECALL_M,
                   CAUSE_ILLEGAL_INST, CAUSE_INST_MISALIGNED,
-                  MSTATUS, MSTATUS_TVM, MSTATUS_TSR, MSTATUS_TW, SATP};
+                  MSTATUS, MSTATUS_TVM, MSTATUS_TSR, MSTATUS_TW,
+                  SATP, MCOUNTEREN, SCOUNTEREN,
+                  CYCLE, CYCLEH, INSTRET, INSTRETH};
 use crate::instruction::*;
 
 /// 执行一条已解码的指令
@@ -167,6 +169,18 @@ pub fn execute(hart: &mut Hart, bus: &mut Bus, inst: Instruction) {
             {
                 hart.trap(CAUSE_ILLEGAL_INST, 0);
                 return;
+            }
+            // mcounteren/scounteren 控制计数器访问
+            if matches!(csr, CYCLE | CYCLEH | INSTRET | INSTRETH) && hart.privilege < 3 {
+                let bit = if matches!(csr, CYCLE | CYCLEH) { 1u32 << 0 } else { 1u32 << 2 };
+                if hart.read_csr(MCOUNTEREN) & bit == 0 {
+                    hart.trap(CAUSE_ILLEGAL_INST, 0);
+                    return;
+                }
+                if hart.privilege == 0 && hart.read_csr(SCOUNTEREN) & bit == 0 {
+                    hart.trap(CAUSE_ILLEGAL_INST, 0);
+                    return;
+                }
             }
             let old = hart.read_csr(csr);
             match op {

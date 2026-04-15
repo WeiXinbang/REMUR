@@ -22,6 +22,14 @@ pub const PMPADDR0: u16  = 0x3B0;
 pub const MHARTID: u16   = 0xF14;
 pub const MCYCLE: u16    = 0xB00;
 pub const MINSTRET: u16  = 0xB02;
+pub const MCYCLEH: u16   = 0xB80;
+pub const MINSTRETH: u16 = 0xB82;
+
+// 只读影子计数器（U/S-mode 可访问，受 mcounteren 限制）
+pub const CYCLE: u16     = 0xC00;
+pub const INSTRET: u16   = 0xC02;
+pub const CYCLEH: u16    = 0xC80;
+pub const INSTRETH: u16  = 0xC82;
 
 // S-mode CSR 地址
 pub const SSTATUS: u16    = 0x100;
@@ -72,6 +80,7 @@ pub struct Hart {
     pub csrs: [u32; 4096],
     pub privilege: u8,           // 当前特权级: 0=U, 1=S, 3=M
     pub reservation: Option<u32>, // LR/SC 保留地址
+    suppress_instret: bool,      // 写 minstret/minstreth 后抑制本次递增
 }
 
 impl Hart {
@@ -82,6 +91,7 @@ impl Hart {
             csrs: [0; 4096],
             privilege: 3, // 复位为 M-mode
             reservation: None,
+            suppress_instret: false,
         };
         // misa: RV32IMA (bits: I=8, M=12, A=0)
         hart.csrs[MISA as usize] = (1 << 30)  // MXL=1 (32-bit)
@@ -107,6 +117,11 @@ impl Hart {
             SSTATUS => self.csrs[MSTATUS as usize] & SSTATUS_MASK,
             SIE => self.csrs[MIE as usize] & SIE_MASK,
             SIP => self.csrs[MIP as usize] & SIE_MASK,
+            // 只读影子计数器 → 读对应的 M-mode 计数器
+            CYCLE    => self.csrs[MCYCLE as usize],
+            INSTRET  => self.csrs[MINSTRET as usize],
+            CYCLEH   => self.csrs[MCYCLEH as usize],
+            INSTRETH => self.csrs[MINSTRETH as usize],
             _ => self.csrs[addr as usize],
         }
     }
@@ -127,6 +142,10 @@ impl Hart {
             SIP => {
                 let mip = self.csrs[MIP as usize];
                 self.csrs[MIP as usize] = (mip & !SIE_MASK) | (val & SIE_MASK);
+            }
+            MINSTRET | MINSTRETH => {
+                self.csrs[addr as usize] = val;
+                self.suppress_instret = true;
             }
             _ => { self.csrs[addr as usize] = val; }
         }
@@ -212,15 +231,42 @@ impl Hart {
         self.pc = self.read_csr(SEPC);
     }
 
+    /// 递增 64 位性能计数器（mcycle + minstret）
+    fn increment_counters(&mut self) {
+        if self.suppress_instret {
+            self.suppress_instret = false;
+            // mcycle still increments even when instret is suppressed
+            let cy_lo = self.csrs[MCYCLE as usize];
+            let (new_cy, carry) = cy_lo.overflowing_add(1);
+            self.csrs[MCYCLE as usize] = new_cy;
+            if carry {
+                self.csrs[MCYCLEH as usize] = self.csrs[MCYCLEH as usize].wrapping_add(1);
+            }
+            return;
+        }
+        // minstret: 每条指令 +1
+        let lo = self.csrs[MINSTRET as usize];
+        let (new_lo, carry) = lo.overflowing_add(1);
+        self.csrs[MINSTRET as usize] = new_lo;
+        if carry {
+            self.csrs[MINSTRETH as usize] = self.csrs[MINSTRETH as usize].wrapping_add(1);
+        }
+        // mcycle = minstret（单发射，每指令一周期）
+        self.csrs[MCYCLE as usize] = new_lo;
+        self.csrs[MCYCLEH as usize] = self.csrs[MINSTRETH as usize];
+    }
+
     /// 取指 → 译码 → 执行
     pub fn step(&mut self, bus: &mut Bus) {
         if self.pc & 0x3 != 0 {
             self.trap(CAUSE_INST_MISALIGNED, self.pc);
+            self.increment_counters();
             return;
         }
         let raw = bus.read32(self.pc);
         let inst = decode::decode(raw);
         execute::execute(self, bus, inst);
+        self.increment_counters();
     }
 
     /// 运行指定周期数，返回 tohost 值（如果有）

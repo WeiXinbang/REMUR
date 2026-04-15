@@ -23,11 +23,11 @@ macro_rules! riscv_tests_mapped {
     };
 }
 
-// rv32mi 测试：14/16 通过
+// rv32mi 测试：15/16 通过
 // breakpoint — 需要 debug trigger CSR（暂跳过）
-// instret_overflow — 需要 minstret 计数器（Step 3.8）
 riscv_tests! { "rv32mi-p",
-    csr, illegal, ma_addr, ma_fetch, mcsr, pmpaddr,
+    csr, illegal, instret_overflow,
+    ma_addr, ma_fetch, mcsr, pmpaddr,
     sbreak, scall, shamt, zicntr,
 }
 
