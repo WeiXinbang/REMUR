@@ -59,10 +59,31 @@ impl Memory {
 }
 
 impl super::bus::Device for Memory {
-    fn read8(&mut self, offset: u32) -> u8 { self.read8(offset) }
-    fn read16(&mut self, offset: u32) -> u16 { self.read16(offset) }
-    fn read32(&mut self, offset: u32) -> u32 { self.read32(offset) }
-    fn write8(&mut self, offset: u32, val: u8) { self.write8(offset, val) }
-    fn write16(&mut self, offset: u32, val: u16) { self.write16(offset, val) }
-    fn write32(&mut self, offset: u32, val: u32) { self.write32(offset, val) }
+    fn read8(&mut self, offset: u32) -> u8 { self.data[offset as usize] }
+    fn read16(&mut self, offset: u32) -> u16 {
+        let off = offset as usize;
+        u16::from_le_bytes([self.data[off], self.data[off + 1]])
+    }
+    fn read32(&mut self, offset: u32) -> u32 {
+        let off = offset as usize;
+        u32::from_le_bytes([
+            self.data[off], self.data[off + 1],
+            self.data[off + 2], self.data[off + 3],
+        ])
+    }
+    fn write8(&mut self, offset: u32, val: u8) { self.data[offset as usize] = val; }
+    fn write16(&mut self, offset: u32, val: u16) {
+        let off = offset as usize;
+        let bytes = val.to_le_bytes();
+        self.data[off] = bytes[0];
+        self.data[off + 1] = bytes[1];
+    }
+    fn write32(&mut self, offset: u32, val: u32) {
+        let off = offset as usize;
+        let bytes = val.to_le_bytes();
+        self.data[off] = bytes[0];
+        self.data[off + 1] = bytes[1];
+        self.data[off + 2] = bytes[2];
+        self.data[off + 3] = bytes[3];
+    }
 }
