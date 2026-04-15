@@ -10,6 +10,7 @@ cached-decode = []
 software-tlb = []
 
 [dependencies]
+goblin = "0.9"
 
 [dev-dependencies]
 criterion = "0.7"

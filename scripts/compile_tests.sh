@@ -36,7 +36,7 @@ compile_suite() {
 
     for t in $tests; do
         local SRC="$ISA_DIR/$suite/$t.S"
-        local ELF="/tmp/${suite}-p-$t"
+        local ELF="$OUT_DIR/${suite}-p-$t.elf"
         local BIN="$OUT_DIR/${suite}-p-$t.bin"
 
         if $CC $BASE_FLAGS -march=$march -T "$ENV_DIR/p/link.ld" $INCLUDES "$SRC" -o "$ELF" 2>/dev/null; then
