@@ -9,7 +9,7 @@
 ```
 M1: RV32I 骨架       ──→  ✅ 能跑简单裸机程序 + riscv-tests 37/37
 M2: 扩展指令集       ──→  ✅ RV32M + RV32A 全部通过 (55/55)
-M3: 特权架构         ──→  M/S/U 模式 + 异常/中断 + Sv32 页表
+M3: 特权架构         ──→  ✅ M/S/U 模式 + 异常委托 + Sv32 页表 (77/77)
 M4: SoC 外设         ──→  CLINT + PLIC + UART，串口输出 Hello
 M5: 启动 Linux       ──→  SBI + DTB + 内核加载 → Linux shell
 M6: 调试/测试        ──→  贯穿 M1-M5，itrace/difftest
@@ -304,46 +304,37 @@ riscv64-unknown-elf-objcopy -O binary test.elf test.bin
 
 ## M3：特权架构
 
-### Step 3.1：特权模式
-在 Hart 中新增 `privilege: u8`（0=U, 1=S, 3=M），复位为 M-mode。
+### 目标
+- 实现 M/S/U 三级特权模式，全部异常/trap 处理，Sv32 虚拟内存
+- 通过 riscv-tests rv32mi（16/16）+ rv32si（6/6）全部测试
 
-### Step 3.2：CSR 读写权限
-根据 CSR 地址的 [11:10] 位判断最低访问权限，[9:8] 位判断读写属性。
+### 已完成
 
-### Step 3.3：异常/中断处理核心流程
-```
-trap 发生时:
-1. 保存当前 PC → mepc/sepc
-2. 保存原因 → mcause/scause
-3. 保存附加信息 → mtval/stval
-4. 保存当前特权级 → mstatus.MPP / mstatus.SPP
-5. 关闭中断 → mstatus.MIE → MPIE, MIE=0
-6. 跳转到 mtvec/stvec
-7. 切换到 M-mode/S-mode
+#### 特权核心
+- 三级特权模式（M/S/U），ecall 区分 cause
+- MRET/SRET 特权恢复（含 MPRV 清除）
+- S-mode CSR 别名（sstatus/sie/sip ↔ mstatus/mie/mip）
+- 异常委托（medeleg/mideleg → trap 到 S-mode 或 M-mode）
+- CSR 访问控制（特权级 + 只读位 + TVM/TSR/TW 检查）
+- 非法指令异常（未知指令/特权不足）
+- 地址未对齐异常（LH/LW/SH/SW/跳转）
 
-MRET/SRET 时:
-1. 恢复特权级 ← MPP/SPP
-2. 恢复中断使能 ← MPIE/SPIE
-3. PC ← mepc/sepc
-```
+#### 虚拟内存
+- Sv32 两级页表遍历（4KB 页 + 4MB 超级页）
+- PTE 权限检查（V/R/W/X/U/A/D + SUM/MXR）
+- 超级页对齐检查（PPN[0] 非零 → 页错误）
+- A/D 位缺失 → 页面错误（软件管理模式）
+- MPRV 支持（M-mode Load/Store 使用 MPP 翻译）
 
-### Step 3.4：中断委托
-检查 medeleg/mideleg，决定 trap 交给 M-mode 还是 S-mode 处理。
+#### 性能计数器
+- minstret/mcycle 64 位计数器（支持溢出进位）
+- 写 minstret/minstreth 后抑制本次递增（规范要求）
+- cycle/instret 只读影子 CSR → 映射到 M-mode 计数器
+- mcounteren/scounteren 访问控制
 
-### Step 3.5：Sv32 页表翻译
-
-```
-虚拟地址 (32-bit): [VPN[1](10) | VPN[0](10) | Offset(12)]
-
-翻译过程:
-1. 从 satp 获取根页表物理地址
-2. PTE_addr = root + VPN[1] * 4
-3. 读取 PTE，检查 V 位
-4. 如果是叶子节点（R|W|X != 0）→ 超级页（4MB）
-5. 否则 PTE_addr = PTE.PPN * 4096 + VPN[0] * 4
-6. 读取 PTE，检查权限 → 得到物理地址
-7. 权限不满足 → 产生页面错误
-```
+#### 其他
+- PMP 基础 CSR 读写（pmpcfg0/pmpaddr0）
+- Debug trigger CSR 桩（tselect/tdata1 报告无触发器）
 
 ### 验证
 - 运行 riscv-tests 的 privilege 测试

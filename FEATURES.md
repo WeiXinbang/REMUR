@@ -133,11 +133,11 @@
 ## 二、特权架构
 
 ### 2.1 三级特权模式
-- [ ] M-mode（机器态，最高特权，复位入口）
-- [ ] S-mode（监管态，Linux 内核运行于此）
-- [ ] U-mode（用户态，应用程序运行于此）
-- [ ] MRET/SRET 指令（从 trap 返回，切换特权级）
-- [ ] WFI 指令（等待中断）
+- [x] M-mode（机器态，最高特权，复位入口）
+- [x] S-mode（监管态，Linux 内核运行于此）
+- [x] U-mode（用户态，应用程序运行于此）
+- [x] MRET/SRET 指令（从 trap 返回，切换特权级）
+- [x] WFI 指令（等待中断）
 
 ### 2.2 M-mode CSR
 | CSR | 地址 | 说明 |
@@ -171,20 +171,20 @@
 | satp      | 0x180 | 页表基址 + 翻译模式 |
 
 ### 2.4 异常处理
-- [ ] 指令地址未对齐（Instruction address misaligned）
+- [x] 指令地址未对齐（Instruction address misaligned）
 - [ ] 指令访问错误（Instruction access fault）
-- [ ] 非法指令（Illegal instruction）
-- [ ] 断点（Breakpoint）
-- [ ] 加载地址未对齐（Load address misaligned）
+- [x] 非法指令（Illegal instruction）
+- [x] 断点（Breakpoint）
+- [x] 加载地址未对齐（Load address misaligned）
 - [ ] 加载访问错误（Load access fault）
-- [ ] 存储地址未对齐（Store address misaligned）
+- [x] 存储地址未对齐（Store address misaligned）
 - [ ] 存储访问错误（Store access fault）
-- [ ] 环境调用 U-mode（Environment call from U-mode）
-- [ ] 环境调用 S-mode（Environment call from S-mode）
-- [ ] 环境调用 M-mode（Environment call from M-mode）
-- [ ] 取指页面错误（Instruction page fault）
-- [ ] 加载页面错误（Load page fault）
-- [ ] 存储页面错误（Store page fault）
+- [x] 环境调用 U-mode（Environment call from U-mode）
+- [x] 环境调用 S-mode（Environment call from S-mode）
+- [x] 环境调用 M-mode（Environment call from M-mode）
+- [x] 取指页面错误（Instruction page fault）
+- [x] 加载页面错误（Load page fault）
+- [x] 存储页面错误（Store page fault）
 
 ### 2.5 中断处理
 - [ ] M-mode 软件中断（MSI）
@@ -193,18 +193,29 @@
 - [ ] S-mode 软件中断（SSI）
 - [ ] S-mode 定时器中断（STI）
 - [ ] S-mode 外部中断（SEI）
-- [ ] 中断委托机制（medeleg/mideleg）
+- [x] 中断委托机制（medeleg/mideleg）
 - [ ] 中断优先级判断
 
 ### 2.6 Sv32 虚拟内存
-- [ ] 两级页表遍历（VPN[1] → VPN[0] → PPN）
-- [ ] 4KB 页面大小
-- [ ] 4MB 超级页（Megapage）支持
-- [ ] PTE 权限位检查（V/R/W/X/U/A/D）
-- [ ] 自动设置 A/D 位
-- [ ] 页面错误生成
+- [x] 两级页表遍历（VPN[1] → VPN[0] → PPN）
+- [x] 4KB 页面大小
+- [x] 4MB 超级页（Megapage）支持
+- [x] PTE 权限位检查（V/R/W/X/U/A/D）
+- [x] A/D 位检查 → 页面错误（软件管理模式，不自动设置）
+- [x] 页面错误生成
 - [ ] TLB 缓存（直接映射，加速翻译）
-- [ ] SFENCE.VMA 指令（刷新 TLB）
+- [x] SFENCE.VMA 指令（当前无 TLB，为 NOP）
+
+### 2.7 其他特权功能
+- [x] MPRV 支持（M-mode Load/Store 使用 MPP 特权级翻译）
+- [x] SUM 支持（S-mode 访问 U 页面）
+- [x] MXR 支持（可执行页面可读）
+- [x] TVM/TSR/TW 陷阱（虚拟化辅助位）
+- [x] CSR 访问权限控制（特权级 + 只读位检查）
+- [x] mcounteren/scounteren 计数器访问控制
+- [x] minstret/mcycle 64 位性能计数器（含写抑制）
+- [x] PMP 基础 CSR 读写（pmpcfg0/pmpaddr0）
+- [x] Debug trigger CSR 桩（tselect/tdata1 报告无触发器）
 
 ---
 
@@ -272,10 +283,11 @@
 ## 五、调试与测试
 
 ### 5.1 测试
-- [x] riscv-tests RV32I 全部通过
-- [x] riscv-tests RV32M 全部通过
-- [x] riscv-tests RV32A 全部通过
-- [ ] riscv-tests privilege 测试通过
+- [x] riscv-tests RV32I 全部通过（37/37）
+- [x] riscv-tests RV32M 全部通过（8/8）
+- [x] riscv-tests RV32A 全部通过（10/10）
+- [x] riscv-tests rv32mi 全部通过（16/16）
+- [x] riscv-tests rv32si 全部通过（6/6）
 - [ ] 自定义裸机测试程序
 
 ### 5.2 调试工具
