@@ -299,10 +299,47 @@
 
 ---
 
-## 六、性能优化（Linux 跑通后）
+## 六、性能基准与优化（M4）
 
+### 6.1 Benchmark 基础设施
+- [x] criterion 0.7 集成（`benches/isa_benchmark.rs`）
+- [x] Release profile 调优（LTO + codegen-units=1 + opt-level=3）
+- [x] 单项测试 benchmark（add/jal/lw/sw/beq/mul/div/amoadd_w/csr/illegal/dirty）
+- [x] 全量 77 测试聚合 benchmark
+
+### 6.2 使用方法
+
+```bash
+# 运行全部 benchmark（release 模式，含 LTO）
+cargo bench
+
+# 只运行特定 benchmark
+cargo bench -- "all-77-tests"
+cargo bench -- "riscv-test/add"
+
+# 与上次结果对比（criterion 自动保存 baseline）
+cargo bench           # 第一次运行 → 保存 baseline
+# ... 修改代码 ...
+cargo bench           # 自动与上次对比，显示 ±% 变化
+
+# 手动保存/对比 baseline
+cargo bench -- --save-baseline before-opt
+# ... 做优化 ...
+cargo bench -- --baseline before-opt
+```
+
+### 6.3 基线数据（2024 基准）
+| 测试 | 耗时 | 说明 |
+|------|------|------|
+| 单项 (add/jal/lw/sw) | ~65-73 µs | 每个测试几百条指令 |
+| dirty (Sv32 页表) | ~69 µs | 最复杂的特权测试 |
+| **全量 77 测试** | **~5.6 ms** | 77 个测试跑一遍 |
+
+### 6.4 计划中的优化
+- [ ] Feature flag 框架（`cached-decode`, `software-tlb`）
 - [ ] 二级查表译码（opcode → funct3 → funct7 函数指针数组）
-- [ ] TLB 命中路径优化
+- [ ] 译码缓存（循环体中跳过重复 decode）
+- [ ] 软件 TLB（缓存 VA→PA 映射，减少页表遍历）
 - [ ] 基本块缓存（已译码指令序列复用）
 - [ ] Host 内存直接映射（减少地址翻译）
 - [ ] JIT 编译（长期目标）
