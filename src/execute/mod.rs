@@ -1,11 +1,11 @@
+use crate::bus::Bus;
 use crate::cpu::{Hart, CAUSE_ECALL_U, CAUSE_ECALL_S, CAUSE_ECALL_M,
                   CAUSE_ILLEGAL_INST, CAUSE_INST_MISALIGNED,
                   MSTATUS, MSTATUS_TVM, MSTATUS_TSR, MSTATUS_TW, SATP};
 use crate::instruction::*;
-use crate::memory::Memory;
 
 /// 执行一条已解码的指令
-pub fn execute(hart: &mut Hart, mem: &mut Memory, inst: Instruction) {
+pub fn execute(hart: &mut Hart, bus: &mut Bus, inst: Instruction) {
     match inst {
         // ===== R-type =====
         Instruction::R { op, rd, rs1, rs2 } => {
@@ -77,11 +77,11 @@ pub fn execute(hart: &mut Hart, mem: &mut Memory, inst: Instruction) {
         Instruction::Load { op, rd, rs1, imm } => {
             let addr = (hart.read_reg(rs1) as i32).wrapping_add(imm) as u32;
             let val = match op {
-                LoadOp::Lb  => mem.read8(addr) as i8 as i32 as u32,
-                LoadOp::Lh  => mem.read16(addr) as i16 as i32 as u32,
-                LoadOp::Lw  => mem.read32(addr),
-                LoadOp::Lbu => mem.read8(addr) as u32,
-                LoadOp::Lhu => mem.read16(addr) as u32,
+                LoadOp::Lb  => bus.read8(addr) as i8 as i32 as u32,
+                LoadOp::Lh  => bus.read16(addr) as i16 as i32 as u32,
+                LoadOp::Lw  => bus.read32(addr),
+                LoadOp::Lbu => bus.read8(addr) as u32,
+                LoadOp::Lhu => bus.read16(addr) as u32,
             };
             hart.write_reg(rd, val);
             hart.pc += 4;
@@ -92,16 +92,9 @@ pub fn execute(hart: &mut Hart, mem: &mut Memory, inst: Instruction) {
             let addr = (hart.read_reg(rs1) as i32).wrapping_add(imm) as u32;
             let val = hart.read_reg(rs2);
             match op {
-                StoreOp::Sb => mem.write8(addr, val as u8),
-                StoreOp::Sh => mem.write16(addr, val as u16),
-                StoreOp::Sw => {
-                    mem.write32(addr, val);
-                    if let Some(tohost) = hart.tohost_addr {
-                        if addr == tohost && val != 0 {
-                            hart.tohost_value = Some(val);
-                        }
-                    }
-                }
+                StoreOp::Sb => bus.write8(addr, val as u8),
+                StoreOp::Sh => bus.write16(addr, val as u16),
+                StoreOp::Sw => bus.write32(addr, val),
             }
             hart.pc += 4;
         }
@@ -193,13 +186,13 @@ pub fn execute(hart: &mut Hart, mem: &mut Memory, inst: Instruction) {
             let addr = hart.read_reg(rs1);
             match op {
                 AmoOp::Lr => {
-                    let val = mem.read32(addr);
+                    let val = bus.read32(addr);
                     hart.write_reg(rd, val);
                     hart.reservation = Some(addr);
                 }
                 AmoOp::Sc => {
                     if hart.reservation == Some(addr) {
-                        mem.write32(addr, hart.read_reg(rs2));
+                        bus.write32(addr, hart.read_reg(rs2));
                         hart.write_reg(rd, 0); // success
                     } else {
                         hart.write_reg(rd, 1); // failure
@@ -207,8 +200,7 @@ pub fn execute(hart: &mut Hart, mem: &mut Memory, inst: Instruction) {
                     hart.reservation = None;
                 }
                 _ => {
-                    // AMO: rd = mem[rs1]; mem[rs1] = op(mem[rs1], rs2)
-                    let old = mem.read32(addr);
+                    let old = bus.read32(addr);
                     let src = hart.read_reg(rs2);
                     let result = match op {
                         AmoOp::Swap => src,
@@ -222,7 +214,7 @@ pub fn execute(hart: &mut Hart, mem: &mut Memory, inst: Instruction) {
                         AmoOp::Maxu => old.max(src),
                         AmoOp::Lr | AmoOp::Sc => unreachable!(),
                     };
-                    mem.write32(addr, result);
+                    bus.write32(addr, result);
                     hart.write_reg(rd, old);
                 }
             }

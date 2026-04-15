@@ -1,6 +1,7 @@
 use std::env;
 use std::fs;
 
+mod bus;
 mod cpu;
 mod decode;
 mod execute;
@@ -33,11 +34,13 @@ fn main() {
     let mut mem = memory::Memory::new(MEM_SIZE, base);
     mem.load_binary(base, &binary);
 
+    let mut bus = bus::Bus::new(mem);
+    bus.tohost_addr = tohost;
+
     let mut hart = cpu::Hart::new();
     hart.pc = base;
-    hart.tohost_addr = tohost;
 
-    match hart.run(&mut mem, 10_000_000) {
+    match hart.run(&mut bus, 10_000_000) {
         Some(val) => {
             if val == 1 {
                 println!("PASS");

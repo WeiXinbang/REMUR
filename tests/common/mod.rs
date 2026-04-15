@@ -1,3 +1,4 @@
+use remur::bus::Bus;
 use remur::cpu::Hart;
 use remur::memory::Memory;
 
@@ -14,11 +15,13 @@ pub fn run_test(bin_name: &str) {
     let mut mem = Memory::new(MEM_SIZE, BASE);
     mem.load_binary(BASE, &binary);
 
+    let mut bus = Bus::new(mem);
+    bus.tohost_addr = Some(TOHOST);
+
     let mut hart = Hart::new();
     hart.pc = BASE;
-    hart.tohost_addr = Some(TOHOST);
 
-    match hart.run(&mut mem, MAX_CYCLES) {
+    match hart.run(&mut bus, MAX_CYCLES) {
         Some(1) => {} // PASS
         Some(val) => panic!("FAIL at test case {} (tohost=0x{:x})", val >> 1, val),
         None => panic!("Timeout after {} cycles, PC=0x{:08x}", MAX_CYCLES, hart.pc),

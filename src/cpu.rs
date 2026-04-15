@@ -1,7 +1,6 @@
-// 部分常量将在后续步骤（性能计数器、PMP 等）启用
 #![allow(dead_code)]
 
-use crate::memory::Memory;
+use crate::bus::Bus;
 use crate::decode;
 use crate::execute;
 
@@ -40,6 +39,9 @@ pub const SATP: u16       = 0x180;
 pub const SSTATUS_MASK: u32 = MSTATUS_SIE | MSTATUS_SPIE | MSTATUS_SPP
     | MSTATUS_FS_MASK | (1 << 18) /* SUM */ | (1 << 19) /* MXR */;
 
+// sie/sip 可见位掩码（S-mode 中断位：SSIE=1, STIE=5, SEIE=9）
+pub const SIE_MASK: u32 = (1 << 1) | (1 << 5) | (1 << 9);
+
 // mstatus 位域
 pub const MSTATUS_SIE: u32   = 1 << 1;
 pub const MSTATUS_MIE: u32   = 1 << 3;
@@ -69,8 +71,6 @@ pub struct Hart {
     pub pc: u32,
     pub csrs: [u32; 4096],
     pub privilege: u8,           // 当前特权级: 0=U, 1=S, 3=M
-    pub tohost_addr: Option<u32>,
-    pub tohost_value: Option<u32>,
     pub reservation: Option<u32>, // LR/SC 保留地址
 }
 
@@ -81,8 +81,6 @@ impl Hart {
             pc: 0,
             csrs: [0; 4096],
             privilege: 3, // 复位为 M-mode
-            tohost_addr: None,
-            tohost_value: None,
             reservation: None,
         };
         // misa: RV32IMA (bits: I=8, M=12, A=0)
@@ -107,8 +105,8 @@ impl Hart {
     pub fn read_csr(&self, addr: u16) -> u32 {
         match addr {
             SSTATUS => self.csrs[MSTATUS as usize] & SSTATUS_MASK,
-            SIE => self.csrs[MIE as usize] & SSTATUS_MASK,
-            SIP => self.csrs[MIP as usize] & SSTATUS_MASK,
+            SIE => self.csrs[MIE as usize] & SIE_MASK,
+            SIP => self.csrs[MIP as usize] & SIE_MASK,
             _ => self.csrs[addr as usize],
         }
     }
@@ -124,11 +122,11 @@ impl Hart {
             }
             SIE => {
                 let mie = self.csrs[MIE as usize];
-                self.csrs[MIE as usize] = (mie & !SSTATUS_MASK) | (val & SSTATUS_MASK);
+                self.csrs[MIE as usize] = (mie & !SIE_MASK) | (val & SIE_MASK);
             }
             SIP => {
                 let mip = self.csrs[MIP as usize];
-                self.csrs[MIP as usize] = (mip & !SSTATUS_MASK) | (val & SSTATUS_MASK);
+                self.csrs[MIP as usize] = (mip & !SIE_MASK) | (val & SIE_MASK);
             }
             _ => { self.csrs[addr as usize] = val; }
         }
@@ -215,22 +213,21 @@ impl Hart {
     }
 
     /// 取指 → 译码 → 执行
-    pub fn step(&mut self, mem: &mut Memory) {
-        // 检查 PC 对齐（RV32I 要求 4 字节对齐）
+    pub fn step(&mut self, bus: &mut Bus) {
         if self.pc & 0x3 != 0 {
             self.trap(CAUSE_INST_MISALIGNED, self.pc);
             return;
         }
-        let raw = mem.read32(self.pc);
+        let raw = bus.read32(self.pc);
         let inst = decode::decode(raw);
-        execute::execute(self, mem, inst);
+        execute::execute(self, bus, inst);
     }
 
     /// 运行指定周期数，返回 tohost 值（如果有）
-    pub fn run(&mut self, mem: &mut Memory, max_cycles: u64) -> Option<u32> {
+    pub fn run(&mut self, bus: &mut Bus, max_cycles: u64) -> Option<u32> {
         for _ in 0..max_cycles {
-            self.step(mem);
-            if let Some(val) = self.tohost_value {
+            self.step(bus);
+            if let Some(val) = bus.tohost_value {
                 return Some(val);
             }
         }
