@@ -340,7 +340,7 @@ impl Hart {
 
         let pte = loop {
             let pte_addr = a.wrapping_add(vpn[level as usize] * 4);
-            let pte = bus.ram.read32(pte_addr);
+            let pte = bus.read32(pte_addr);
 
             // 无效 PTE 或保留编码 (W=1, R=0)
             if (pte & PTE_V) == 0 || ((pte & PTE_R) == 0 && (pte & PTE_W) != 0) {

@@ -4,13 +4,15 @@ use std::fs;
 mod bus;
 #[cfg(feature = "cached-decode")]
 mod cache;
+mod clint;
 mod cpu;
 mod decode;
 mod execute;
 mod instruction;
 mod memory;
+mod plic;
+mod uart;
 
-const RAM_BASE: u32 = 0x8000_0000;
 const MEM_SIZE: usize = 128 * 1024 * 1024;
 
 fn main() {
@@ -28,14 +30,14 @@ fn main() {
         None
     };
 
-    let mut mem = memory::Memory::new(MEM_SIZE, RAM_BASE);
-    mem.load_binary(RAM_BASE, &binary);
+    let mut mem = memory::Memory::new(MEM_SIZE);
+    mem.load_binary(0, &binary);
 
     let mut bus = bus::Bus::new(mem);
     bus.tohost_addr = tohost;
 
     let mut hart = cpu::Hart::new();
-    hart.pc = RAM_BASE;
+    hart.pc = bus::RAM_BASE;
 
     match hart.run(&mut bus, 10_000_000) {
         Some(val) => {

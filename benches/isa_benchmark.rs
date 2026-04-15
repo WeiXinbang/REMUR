@@ -1,9 +1,8 @@
 use criterion::{criterion_group, criterion_main, Criterion, BenchmarkId};
-use remur::bus::Bus;
+use remur::bus::{Bus, RAM_BASE};
 use remur::cpu::Hart;
 use remur::memory::Memory;
 
-const BASE: u32 = 0x8000_0000;
 const TOHOST: u32 = 0x8000_1000;
 const MEM_SIZE: usize = 128 * 1024 * 1024;
 const MAX_CYCLES: u64 = 10_000_000;
@@ -13,14 +12,14 @@ fn run_test_return_cycles(bin_name: &str) -> u64 {
     let binary = std::fs::read(&path)
         .unwrap_or_else(|e| panic!("Cannot read {}: {}", path, e));
 
-    let mut mem = Memory::new(MEM_SIZE, BASE);
-    mem.load_binary(BASE, &binary);
+    let mut mem = Memory::new(MEM_SIZE);
+    mem.load_binary(0, &binary);
 
     let mut bus = Bus::new(mem);
     bus.tohost_addr = Some(TOHOST);
 
     let mut hart = Hart::new();
-    hart.pc = BASE;
+    hart.pc = RAM_BASE;
 
     let mut cycles: u64 = 0;
     for i in 0..MAX_CYCLES {
