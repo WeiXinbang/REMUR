@@ -1,4 +1,6 @@
-use crate::cpu::{Hart, CAUSE_ECALL_M};
+use crate::cpu::{Hart, CAUSE_ECALL_U, CAUSE_ECALL_S, CAUSE_ECALL_M,
+                  CAUSE_ILLEGAL_INST, CAUSE_INST_MISALIGNED,
+                  MSTATUS, MSTATUS_TVM, MSTATUS_TSR, MSTATUS_TW, SATP};
 use crate::instruction::*;
 use crate::memory::Memory;
 
@@ -117,7 +119,12 @@ pub fn execute(hart: &mut Hart, mem: &mut Memory, inst: Instruction) {
                 BrOp::Bgeu => v1 >= v2,
             };
             if taken {
-                hart.pc = (hart.pc as i32).wrapping_add(imm) as u32;
+                let target = (hart.pc as i32).wrapping_add(imm) as u32;
+                if target & 0x3 != 0 {
+                    hart.trap(CAUSE_INST_MISALIGNED, target);
+                } else {
+                    hart.pc = target;
+                }
             } else {
                 hart.pc += 4;
             }
@@ -129,17 +136,45 @@ pub fn execute(hart: &mut Hart, mem: &mut Memory, inst: Instruction) {
 
         // ===== Jump =====
         Instruction::Jal { rd, imm } => {
-            hart.write_reg(rd, hart.pc + 4);
-            hart.pc = (hart.pc as i32).wrapping_add(imm) as u32;
+            let target = (hart.pc as i32).wrapping_add(imm) as u32;
+            if target & 0x3 != 0 {
+                hart.trap(CAUSE_INST_MISALIGNED, target);
+            } else {
+                hart.write_reg(rd, hart.pc + 4);
+                hart.pc = target;
+            }
         }
         Instruction::Jalr { rd, rs1, imm } => {
-            let ret = hart.pc + 4;
-            hart.pc = ((hart.read_reg(rs1) as i32).wrapping_add(imm) as u32) & !1;
-            hart.write_reg(rd, ret);
+            let target = ((hart.read_reg(rs1) as i32).wrapping_add(imm) as u32) & !1;
+            if target & 0x3 != 0 {
+                hart.trap(CAUSE_INST_MISALIGNED, target);
+            } else {
+                let ret = hart.pc + 4;
+                hart.pc = target;
+                hart.write_reg(rd, ret);
+            }
         }
 
         // ===== CSR =====
         Instruction::Csr { op, rd, rs1, csr } => {
+            // CSR 访问控制：检查特权级和读写权限
+            let csr_priv = (csr >> 8) & 0x3;
+            let read_only = ((csr >> 10) & 0x3) == 0x3;
+            let is_write = match op {
+                CsrOp::Rw | CsrOp::Rwi => true,
+                _ => rs1 != 0,
+            };
+            if hart.privilege < (csr_priv as u8) || (read_only && is_write) {
+                hart.trap(CAUSE_ILLEGAL_INST, 0);
+                return;
+            }
+            // TVM=1 时 S-mode 访问 satp 为非法
+            if csr == SATP && hart.privilege == 1
+                && (hart.read_csr(MSTATUS) & MSTATUS_TVM) != 0
+            {
+                hart.trap(CAUSE_ILLEGAL_INST, 0);
+                return;
+            }
             let old = hart.read_csr(csr);
             match op {
                 CsrOp::Rw  => { hart.write_csr(csr, hart.read_reg(rs1)); }
@@ -195,12 +230,46 @@ pub fn execute(hart: &mut Hart, mem: &mut Memory, inst: Instruction) {
         }
 
         // ===== System / Privilege =====
-        Instruction::Ecall  => hart.trap(CAUSE_ECALL_M, 0),
+        Instruction::Ecall  => {
+            let cause = match hart.privilege {
+                0 => CAUSE_ECALL_U,
+                1 => CAUSE_ECALL_S,
+                _ => CAUSE_ECALL_M,
+            };
+            hart.trap(cause, 0);
+        }
         Instruction::Ebreak => hart.trap(3, hart.pc),
         Instruction::Fence  => { hart.pc += 4; }
-        Instruction::Mret   => hart.mret(),
-        Instruction::Sret   => { hart.pc += 4; }
-        Instruction::Wfi    => { hart.pc += 4; }
-        Instruction::SfenceVma { .. } => { hart.pc += 4; }
+        Instruction::Mret   => {
+            if hart.privilege < 3 { hart.trap(CAUSE_ILLEGAL_INST, 0); return; }
+            hart.mret();
+        }
+        Instruction::Sret   => {
+            if hart.privilege < 1 { hart.trap(CAUSE_ILLEGAL_INST, 0); return; }
+            // TSR=1 时 S-mode 执行 SRET 为非法
+            if hart.privilege == 1 && (hart.read_csr(MSTATUS) & MSTATUS_TSR) != 0 {
+                hart.trap(CAUSE_ILLEGAL_INST, 0); return;
+            }
+            hart.sret();
+        }
+        Instruction::Wfi    => {
+            // TW=1 时非 M-mode 执行 WFI 为非法
+            if hart.privilege < 3 && (hart.read_csr(MSTATUS) & MSTATUS_TW) != 0 {
+                hart.trap(CAUSE_ILLEGAL_INST, 0); return;
+            }
+            hart.pc += 4;
+        }
+        Instruction::SfenceVma { .. } => {
+            // TVM=1 时 S-mode 执行 SFENCE.VMA 为非法
+            if hart.privilege == 1 && (hart.read_csr(MSTATUS) & MSTATUS_TVM) != 0 {
+                hart.trap(CAUSE_ILLEGAL_INST, 0); return;
+            }
+            hart.pc += 4;
+        }
+
+        // ===== Illegal instruction =====
+        Instruction::Illegal(inst_val) => {
+            hart.trap(CAUSE_ILLEGAL_INST, inst_val);
+        }
     }
 }

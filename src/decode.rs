@@ -16,7 +16,7 @@ pub fn decode(inst: u32) -> Instruction {
         0b1100111 => Instruction::Jalr  { rd: rd(inst), rs1: rs1(inst), imm: imm_i(inst) },
         0b1110011 => decode_system(inst),
         0b0001111 => Instruction::Fence,
-        _ => panic!("Unknown opcode: 0b{:07b} (inst=0x{:08x})", op, inst),
+        _ => Instruction::Illegal(inst),
     }
 }
 
@@ -71,7 +71,7 @@ fn decode_r(inst: u32) -> Instruction {
         (0x5, 0x01) => ROp::Divu,
         (0x6, 0x01) => ROp::Rem,
         (0x7, 0x01) => ROp::Remu,
-        (f3, f7) => panic!("Unknown R-type: f3={f3:#x}, f7={f7:#x} (inst={inst:#010x})"),
+        (f3, f7) => return Instruction::Illegal(inst),
     };
     Instruction::R { op, rd, rs1, rs2 }
 }
@@ -85,13 +85,20 @@ fn decode_i_alu(inst: u32) -> Instruction {
         0x4 => Instruction::I { op: IOp::Xori,  rd, rs1, imm: imm_i(inst) },
         0x6 => Instruction::I { op: IOp::Ori,   rd, rs1, imm: imm_i(inst) },
         0x7 => Instruction::I { op: IOp::Andi,  rd, rs1, imm: imm_i(inst) },
-        0x1 => Instruction::Shift { op: ShiftOp::Slli, rd, rs1, shamt: (inst >> 20) & 0x1F },
+        0x1 => {
+            if funct7(inst) != 0 { return Instruction::Illegal(inst); }
+            Instruction::Shift { op: ShiftOp::Slli, rd, rs1, shamt: (inst >> 20) & 0x1F }
+        }
         0x5 => {
             let shamt = (inst >> 20) & 0x1F;
-            let op = if funct7(inst) == 0 { ShiftOp::Srli } else { ShiftOp::Srai };
+            let op = match funct7(inst) {
+                0x00 => ShiftOp::Srli,
+                0x20 => ShiftOp::Srai,
+                _ => return Instruction::Illegal(inst),
+            };
             Instruction::Shift { op, rd, rs1, shamt }
         }
-        _ => unreachable!(),
+        _ => return Instruction::Illegal(inst),
     }
 }
 
@@ -100,7 +107,7 @@ fn decode_load(inst: u32) -> Instruction {
     let op = match funct3(inst) {
         0x0 => LoadOp::Lb, 0x1 => LoadOp::Lh, 0x2 => LoadOp::Lw,
         0x4 => LoadOp::Lbu, 0x5 => LoadOp::Lhu,
-        f3 => panic!("Unknown load funct3: {f3:#x} (inst={inst:#010x})"),
+        f3 => return Instruction::Illegal(inst),
     };
     Instruction::Load { op, rd, rs1, imm }
 }
@@ -109,7 +116,7 @@ fn decode_store(inst: u32) -> Instruction {
     let (rs1, rs2, imm) = (rs1(inst), rs2(inst), imm_s(inst));
     let op = match funct3(inst) {
         0x0 => StoreOp::Sb, 0x1 => StoreOp::Sh, 0x2 => StoreOp::Sw,
-        f3 => panic!("Unknown store funct3: {f3:#x} (inst={inst:#010x})"),
+        f3 => return Instruction::Illegal(inst),
     };
     Instruction::Store { op, rs1, rs2, imm }
 }
@@ -120,7 +127,7 @@ fn decode_branch(inst: u32) -> Instruction {
         0x0 => BrOp::Beq,  0x1 => BrOp::Bne,
         0x4 => BrOp::Blt,  0x5 => BrOp::Bge,
         0x6 => BrOp::Bltu, 0x7 => BrOp::Bgeu,
-        f3 => panic!("Unknown branch funct3: {f3:#x} (inst={inst:#010x})"),
+        f3 => return Instruction::Illegal(inst),
     };
     Instruction::Branch { op, rs1, rs2, imm }
 }
@@ -142,7 +149,7 @@ fn decode_amo(inst: u32) -> Instruction {
         0x14 => AmoOp::Max,
         0x18 => AmoOp::Minu,
         0x1C => AmoOp::Maxu,
-        f5 => panic!("Unknown AMO funct5={f5:#x} (inst={inst:#010x})"),
+        f5 => return Instruction::Illegal(inst),
     };
     Instruction::Amo { op, rd, rs1, rs2, aq, rl }
 }
@@ -157,14 +164,14 @@ fn decode_system(inst: u32) -> Instruction {
             (0x08, 2) => Instruction::Sret,
             (0x08, 5) => Instruction::Wfi,
             (0x09, _) => Instruction::SfenceVma { rs1: rs1(inst), rs2: rs2(inst) },
-            (f7, r2) => panic!("Unknown SYSTEM f7={f7:#x}, rs2={r2} (inst={inst:#010x})"),
+            (f7, r2) => return Instruction::Illegal(inst),
         }
     } else {
         let (rd, rs1, csr) = (rd(inst), rs1(inst), ((inst >> 20) & 0xFFF) as u16);
         let op = match f3 {
             0x1 => CsrOp::Rw,  0x2 => CsrOp::Rs,  0x3 => CsrOp::Rc,
             0x5 => CsrOp::Rwi, 0x6 => CsrOp::Rsi, 0x7 => CsrOp::Rci,
-            _ => panic!("Unknown CSR funct3={f3:#x} (inst={inst:#010x})"),
+            _ => return Instruction::Illegal(inst),
         };
         Instruction::Csr { op, rd, rs1, csr }
     }

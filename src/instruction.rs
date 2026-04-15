@@ -52,4 +52,5 @@ pub enum Instruction {
     Sret,
     Wfi,
     SfenceVma { rs1: usize, rs2: usize },
+    Illegal(u32), // 非法指令，携带原始指令值
 }
