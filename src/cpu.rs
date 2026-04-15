@@ -68,6 +68,17 @@ pub const MSTATUS_TVM: u32   = 1 << 20;
 pub const MSTATUS_TW: u32    = 1 << 21;
 pub const MSTATUS_TSR: u32   = 1 << 22;
 
+// MIP/MIE 位域（中断挂起/使能）
+pub const MIP_SSIP: u32 = 1 << 1;   // S-mode 软件中断
+pub const MIP_MSIP: u32 = 1 << 3;   // M-mode 软件中断
+pub const MIP_STIP: u32 = 1 << 5;   // S-mode 定时器中断
+pub const MIP_MTIP: u32 = 1 << 7;   // M-mode 定时器中断
+pub const MIP_SEIP: u32 = 1 << 9;   // S-mode 外部中断
+pub const MIP_MEIP: u32 = 1 << 11;  // M-mode 外部中断
+
+// 硬件控制的 MIP 位（CSR 写入时保护）
+const MIP_HW_MASK: u32 = MIP_MTIP | MIP_MSIP | MIP_MEIP;
+
 // 异常原因
 pub const CAUSE_INST_MISALIGNED: u32   = 0;
 pub const CAUSE_ILLEGAL_INST: u32      = 2;
@@ -174,7 +185,14 @@ impl Hart {
             }
             SIP => {
                 let mip = self.csrs[MIP as usize];
-                self.csrs[MIP as usize] = (mip & !SIE_MASK) | (val & SIE_MASK);
+                // 保护硬件位，只允许写入 S-mode 位中非硬件控制的部分
+                let writable = SIE_MASK & !MIP_HW_MASK;
+                self.csrs[MIP as usize] = (mip & !writable) | (val & writable);
+            }
+            MIP => {
+                // 保护硬件控制的位（MTIP、MSIP、MEIP）
+                let hw_bits = self.csrs[MIP as usize] & MIP_HW_MASK;
+                self.csrs[MIP as usize] = (val & !MIP_HW_MASK) | hw_bits;
             }
             MINSTRET | MINSTRETH => {
                 self.csrs[addr as usize] = val;
@@ -414,8 +432,81 @@ impl Hart {
         Ok(pa)
     }
 
+    /// 从 CLINT/PLIC 同步硬件中断位到 MIP
+    fn update_mip(&mut self, bus: &Bus) {
+        let mut mip = self.csrs[MIP as usize];
+        // MTIP: 由 CLINT 定时器控制
+        if bus.clint.timer_interrupt_pending() {
+            mip |= MIP_MTIP;
+        } else {
+            mip &= !MIP_MTIP;
+        }
+        // MSIP: 由 CLINT 软件中断控制
+        if bus.clint.software_interrupt_pending() {
+            mip |= MIP_MSIP;
+        } else {
+            mip &= !MIP_MSIP;
+        }
+        // MEIP: 由 PLIC 外部中断控制
+        if bus.plic.has_pending_interrupt() {
+            mip |= MIP_MEIP;
+        } else {
+            mip &= !MIP_MEIP;
+        }
+        self.csrs[MIP as usize] = mip;
+    }
+
+    /// 检查待处理中断，返回最高优先级中断的 cause（含 MSB 中断标志）
+    fn check_pending_interrupts(&self) -> Option<u32> {
+        let mip = self.csrs[MIP as usize];
+        let mie_reg = self.csrs[MIE as usize];
+        let pending = mip & mie_reg;
+        if pending == 0 {
+            return None;
+        }
+
+        let mstatus = self.csrs[MSTATUS as usize];
+        let mideleg = self.csrs[MIDELEG as usize];
+
+        // 非委托中断（trap 到 M-mode）：priv < M，或 priv == M 且 MIE=1
+        let m_ie = match self.privilege {
+            3 => (mstatus & MSTATUS_MIE) != 0,
+            _ => true,
+        };
+        // 委托中断（trap 到 S-mode）：priv < S，或 priv == S 且 SIE=1；M-mode 不响应
+        let s_ie = match self.privilege {
+            3 => false,
+            1 => (mstatus & MSTATUS_SIE) != 0,
+            _ => true,
+        };
+
+        let can_take = (pending & !mideleg & if m_ie { u32::MAX } else { 0 })
+                     | (pending & mideleg & if s_ie { u32::MAX } else { 0 });
+        if can_take == 0 {
+            return None;
+        }
+
+        // 优先级: MEI(11) > MSI(3) > MTI(7) > SEI(9) > SSI(1) > STI(5)
+        for bit in [11, 3, 7, 9, 1, 5] {
+            if (can_take >> bit) & 1 != 0 {
+                return Some(0x8000_0000 | bit);
+            }
+        }
+        None
+    }
+
     /// 取指 → 译码 → 执行
     pub fn step(&mut self, bus: &mut Bus) {
+        // 推进 CLINT 时钟 & 同步硬件中断位
+        bus.clint.tick();
+        self.update_mip(bus);
+
+        // 检查待处理中断
+        if let Some(cause) = self.check_pending_interrupts() {
+            self.trap(cause, 0);
+            return;
+        }
+
         if self.pc & 0x3 != 0 {
             self.trap(CAUSE_INST_MISALIGNED, self.pc);
             self.increment_counters();
