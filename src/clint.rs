@@ -36,7 +36,7 @@ impl Clint {
 }
 
 impl super::bus::Device for Clint {
-    fn read32(&self, offset: u32) -> u32 {
+    fn read32(&mut self, offset: u32) -> u32 {
         match offset {
             0x0000 => self.msip,
             // mtimecmp low

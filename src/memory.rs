@@ -59,9 +59,9 @@ impl Memory {
 }
 
 impl super::bus::Device for Memory {
-    fn read8(&self, offset: u32) -> u8 { self.read8(offset) }
-    fn read16(&self, offset: u32) -> u16 { self.read16(offset) }
-    fn read32(&self, offset: u32) -> u32 { self.read32(offset) }
+    fn read8(&mut self, offset: u32) -> u8 { self.read8(offset) }
+    fn read16(&mut self, offset: u32) -> u16 { self.read16(offset) }
+    fn read32(&mut self, offset: u32) -> u32 { self.read32(offset) }
     fn write8(&mut self, offset: u32, val: u8) { self.write8(offset, val) }
     fn write16(&mut self, offset: u32, val: u16) { self.write16(offset, val) }
     fn write32(&mut self, offset: u32, val: u32) { self.write32(offset, val) }

@@ -328,7 +328,7 @@ impl Hart {
     }
 
     /// Sv32 虚拟地址翻译。返回物理地址或 (cause, tval) 页错误
-    pub fn translate(&self, bus: &Bus, va: u32, access: AccessType) -> Result<u32, (u32, u32)> {
+    pub fn translate(&self, bus: &mut Bus, va: u32, access: AccessType) -> Result<u32, (u32, u32)> {
         let priv_level = match access {
             AccessType::Execute => self.privilege,
             _ => self.effective_priv(),
@@ -433,7 +433,7 @@ impl Hart {
     }
 
     /// 从 CLINT/PLIC 同步硬件中断位到 MIP
-    fn update_mip(&mut self, bus: &Bus) {
+    fn update_mip(&mut self, bus: &mut Bus) {
         let mut mip = self.csrs[MIP as usize];
         // MTIP: 由 CLINT 定时器控制
         if bus.clint.timer_interrupt_pending() {

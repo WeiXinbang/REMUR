@@ -17,10 +17,12 @@ pub const RAM_BASE: u32 = 0x8000_0000;
 ///
 /// offset 为相对设备基地址的偏移量，由 Bus 负责映射。
 /// 提供默认实现（读返回 0，写忽略），设备只需覆盖用到的方法。
+/// MMIO 读取使用 &mut self，因为硬件读取常有副作用
+/// （如 PLIC claim 清除 pending，UART RBR 消费接收缓冲）
 pub trait Device {
-    fn read8(&self, _offset: u32) -> u8 { 0 }
-    fn read16(&self, _offset: u32) -> u16 { 0 }
-    fn read32(&self, _offset: u32) -> u32 { 0 }
+    fn read8(&mut self, _offset: u32) -> u8 { 0 }
+    fn read16(&mut self, _offset: u32) -> u16 { 0 }
+    fn read32(&mut self, _offset: u32) -> u32 { 0 }
     fn write8(&mut self, _offset: u32, _val: u8) {}
     fn write16(&mut self, _offset: u32, _val: u16) {}
     fn write32(&mut self, _offset: u32, _val: u32) {}
@@ -51,7 +53,7 @@ impl Bus {
         }
     }
 
-    pub fn read8(&self, addr: u32) -> u8 {
+    pub fn read8(&mut self, addr: u32) -> u8 {
         match addr {
             CLINT_BASE..=CLINT_END => self.clint.read8(addr - CLINT_BASE),
             PLIC_BASE..=PLIC_END => self.plic.read8(addr - PLIC_BASE),
@@ -61,7 +63,7 @@ impl Bus {
         }
     }
 
-    pub fn read16(&self, addr: u32) -> u16 {
+    pub fn read16(&mut self, addr: u32) -> u16 {
         match addr {
             CLINT_BASE..=CLINT_END => self.clint.read16(addr - CLINT_BASE),
             PLIC_BASE..=PLIC_END => self.plic.read16(addr - PLIC_BASE),
@@ -71,7 +73,7 @@ impl Bus {
         }
     }
 
-    pub fn read32(&self, addr: u32) -> u32 {
+    pub fn read32(&mut self, addr: u32) -> u32 {
         match addr {
             CLINT_BASE..=CLINT_END => self.clint.read32(addr - CLINT_BASE),
             PLIC_BASE..=PLIC_END => self.plic.read32(addr - PLIC_BASE),

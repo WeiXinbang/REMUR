@@ -12,8 +12,7 @@ pub struct Plic {
     pending: u32,            // pending bits (bit per source)
     enable: u32,             // context 0 enable bits
     threshold: u32,          // context 0 threshold
-    #[allow(dead_code)]
-    claimed: u32,            // currently claimed IRQ (0 = none)
+    claimed: u32,            // currently claimed IRQs (bit per source)
 }
 
 impl Plic {
@@ -48,7 +47,7 @@ impl Plic {
 }
 
 impl super::bus::Device for Plic {
-    fn read32(&self, offset: u32) -> u32 {
+    fn read32(&mut self, offset: u32) -> u32 {
         match offset {
             // source priorities: 0x000000..0x001000
             0x000000..=0x000FFF => {
@@ -71,15 +70,25 @@ impl super::bus::Device for Plic {
             }
             // context 0 threshold
             0x200000 => self.threshold,
-            // context 0 claim
+            // context 0 claim — 返回最高优先级待处理 IRQ 并原子清除 pending
             0x200004 => {
                 let active = self.pending & self.enable;
+                let mut best_irq = 0u32;
+                let mut best_prio = 0u32;
                 for irq in 1..32u32 {
-                    if (active >> irq) & 1 != 0 && self.priority[irq as usize] > self.threshold {
-                        return irq;
+                    if (active >> irq) & 1 != 0 {
+                        let prio = self.priority[irq as usize];
+                        if prio > self.threshold && prio > best_prio {
+                            best_prio = prio;
+                            best_irq = irq;
+                        }
                     }
                 }
-                0
+                if best_irq != 0 {
+                    self.pending &= !(1 << best_irq);
+                    self.claimed |= 1 << best_irq;
+                }
+                best_irq
             }
             _ => 0,
         }
@@ -102,10 +111,10 @@ impl super::bus::Device for Plic {
             }
             // context 0 threshold
             0x200000 => self.threshold = val,
-            // context 0 complete
+            // context 0 complete — 清除 claimed 位，允许再次触发
             0x200004 => {
                 if val > 0 && val < 32 {
-                    self.pending &= !(1 << val);
+                    self.claimed &= !(1 << val);
                 }
             }
             _ => {}

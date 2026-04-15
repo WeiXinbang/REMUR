@@ -15,7 +15,7 @@ const THR: u32 = 0x00; // Transmit Holding Register (只写)
 const LSR: u32 = 0x05; // Line Status Register (只读)
 
 impl super::bus::Device for Uart {
-    fn read8(&self, offset: u32) -> u8 {
+    fn read8(&mut self, offset: u32) -> u8 {
         match offset {
             LSR => 0x60, // bit5=THR empty, bit6=transmitter idle
             _ => 0,
