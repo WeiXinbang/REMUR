@@ -4,6 +4,11 @@ version = "0.1.0"
 edition = "2024"
 license = "AGPL-3.0-or-later"
 
+[features]
+default = ["cached-decode", "software-tlb"]
+cached-decode = []
+software-tlb = []
+
 [dependencies]
 
 [dev-dependencies]

@@ -1,6 +1,8 @@
 #![allow(dead_code)]
 
 use crate::bus::Bus;
+#[cfg(feature = "cached-decode")]
+use crate::cache::DecodeCache;
 use crate::decode;
 use crate::execute;
 
@@ -99,6 +101,8 @@ pub struct Hart {
     pub privilege: u8,           // 当前特权级: 0=U, 1=S, 3=M
     pub reservation: Option<u32>, // LR/SC 保留地址
     suppress_instret: bool,      // 写 minstret/minstreth 后抑制本次递增
+    #[cfg(feature = "cached-decode")]
+    decode_cache: DecodeCache,
 }
 
 impl Hart {
@@ -110,6 +114,8 @@ impl Hart {
             privilege: 3, // 复位为 M-mode
             reservation: None,
             suppress_instret: false,
+            #[cfg(feature = "cached-decode")]
+            decode_cache: DecodeCache::new(),
         };
         // misa: RV32IMA (bits: I=8, M=12, A=0)
         hart.csrs[MISA as usize] = (1 << 30)  // MXL=1 (32-bit)
@@ -127,6 +133,12 @@ impl Hart {
         if idx != 0 {
             self.regs[idx] = val;
         }
+    }
+
+    /// 清空译码缓存（SFENCE.VMA 时由 execute 调用）
+    #[cfg(feature = "cached-decode")]
+    pub fn flush_decode_cache(&mut self) {
+        self.decode_cache.flush();
     }
 
     /// 读 CSR（处理 S-mode 别名）
@@ -167,6 +179,11 @@ impl Hart {
             MINSTRET | MINSTRETH => {
                 self.csrs[addr as usize] = val;
                 self.suppress_instret = true;
+            }
+            SATP => {
+                self.csrs[addr as usize] = val;
+                #[cfg(feature = "cached-decode")]
+                self.decode_cache.flush();
             }
             _ => { self.csrs[addr as usize] = val; }
         }
@@ -412,8 +429,23 @@ impl Hart {
                 return;
             }
         };
-        let raw = bus.read32(phys_pc);
-        let inst = decode::decode(raw);
+
+        #[cfg(feature = "cached-decode")]
+        let inst = if let Some(cached) = self.decode_cache.lookup(phys_pc) {
+            cached
+        } else {
+            let raw = bus.read32(phys_pc);
+            let decoded = decode::decode(raw);
+            self.decode_cache.insert(phys_pc, decoded);
+            decoded
+        };
+
+        #[cfg(not(feature = "cached-decode"))]
+        let inst = {
+            let raw = bus.read32(phys_pc);
+            decode::decode(raw)
+        };
+
         execute::execute(self, bus, inst);
         self.increment_counters();
     }

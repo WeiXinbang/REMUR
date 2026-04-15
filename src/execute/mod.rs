@@ -283,6 +283,8 @@ pub fn execute(hart: &mut Hart, bus: &mut Bus, inst: Instruction) {
             if hart.privilege == 1 && (hart.read_csr(MSTATUS) & MSTATUS_TVM) != 0 {
                 hart.trap(CAUSE_ILLEGAL_INST, 0); return;
             }
+            #[cfg(feature = "cached-decode")]
+            hart.flush_decode_cache();
             hart.pc += 4;
         }
 

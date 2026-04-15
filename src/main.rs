@@ -2,6 +2,8 @@ use std::env;
 use std::fs;
 
 mod bus;
+#[cfg(feature = "cached-decode")]
+mod cache;
 mod cpu;
 mod decode;
 mod execute;
