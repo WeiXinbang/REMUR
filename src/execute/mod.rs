@@ -11,8 +11,8 @@ pub fn execute(hart: &mut Hart, bus: &mut Bus, inst: Instruction) {
     match inst {
         // ===== R-type =====
         Instruction::R { op, rd, rs1, rs2 } => {
-            let v1 = hart.read_reg(rs1);
-            let v2 = hart.read_reg(rs2);
+            let v1 = hart.read_reg(rs1 as usize);
+            let v2 = hart.read_reg(rs2 as usize);
             let result = match op {
                 ROp::Add  => v1.wrapping_add(v2),
                 ROp::Sub  => v1.wrapping_sub(v2),
@@ -44,13 +44,13 @@ pub fn execute(hart: &mut Hart, bus: &mut Bus, inst: Instruction) {
                 }
                 ROp::Remu => if v2 == 0 { v1 } else { v1 % v2 },
             };
-            hart.write_reg(rd, result);
+            hart.write_reg(rd as usize, result);
             hart.pc += 4;
         }
 
         // ===== I-type ALU =====
         Instruction::I { op, rd, rs1, imm } => {
-            let v = hart.read_reg(rs1);
+            let v = hart.read_reg(rs1 as usize);
             let result = match op {
                 IOp::Addi  => (v as i32).wrapping_add(imm) as u32,
                 IOp::Slti  => ((v as i32) < imm) as u32,
@@ -59,25 +59,25 @@ pub fn execute(hart: &mut Hart, bus: &mut Bus, inst: Instruction) {
                 IOp::Ori   => v | (imm as u32),
                 IOp::Andi  => v & (imm as u32),
             };
-            hart.write_reg(rd, result);
+            hart.write_reg(rd as usize, result);
             hart.pc += 4;
         }
 
         // ===== Shift =====
         Instruction::Shift { op, rd, rs1, shamt } => {
-            let v = hart.read_reg(rs1);
+            let v = hart.read_reg(rs1 as usize);
             let result = match op {
                 ShiftOp::Slli => v << shamt,
                 ShiftOp::Srli => v >> shamt,
                 ShiftOp::Srai => ((v as i32) >> shamt) as u32,
             };
-            hart.write_reg(rd, result);
+            hart.write_reg(rd as usize, result);
             hart.pc += 4;
         }
 
         // ===== Load =====
         Instruction::Load { op, rd, rs1, imm } => {
-            let addr = (hart.read_reg(rs1) as i32).wrapping_add(imm) as u32;
+            let addr = (hart.read_reg(rs1 as usize) as i32).wrapping_add(imm) as u32;
             let pa = match hart.translate(bus, addr, AccessType::Read) {
                 Ok(pa) => pa,
                 Err((cause, tval)) => { hart.trap(cause, tval); return; }
@@ -89,18 +89,18 @@ pub fn execute(hart: &mut Hart, bus: &mut Bus, inst: Instruction) {
                 LoadOp::Lbu => bus.read8(pa) as u32,
                 LoadOp::Lhu => bus.read16(pa) as u32,
             };
-            hart.write_reg(rd, val);
+            hart.write_reg(rd as usize, val);
             hart.pc += 4;
         }
 
         // ===== Store =====
         Instruction::Store { op, rs1, rs2, imm } => {
-            let addr = (hart.read_reg(rs1) as i32).wrapping_add(imm) as u32;
+            let addr = (hart.read_reg(rs1 as usize) as i32).wrapping_add(imm) as u32;
             let pa = match hart.translate(bus, addr, AccessType::Write) {
                 Ok(pa) => pa,
                 Err((cause, tval)) => { hart.trap(cause, tval); return; }
             };
-            let val = hart.read_reg(rs2);
+            let val = hart.read_reg(rs2 as usize);
             match op {
                 StoreOp::Sb => bus.write8(pa, val as u8),
                 StoreOp::Sh => bus.write16(pa, val as u16),
@@ -111,8 +111,8 @@ pub fn execute(hart: &mut Hart, bus: &mut Bus, inst: Instruction) {
 
         // ===== Branch =====
         Instruction::Branch { op, rs1, rs2, imm } => {
-            let v1 = hart.read_reg(rs1);
-            let v2 = hart.read_reg(rs2);
+            let v1 = hart.read_reg(rs1 as usize);
+            let v2 = hart.read_reg(rs2 as usize);
             let taken = match op {
                 BrOp::Beq  => v1 == v2,
                 BrOp::Bne  => v1 != v2,
@@ -134,8 +134,8 @@ pub fn execute(hart: &mut Hart, bus: &mut Bus, inst: Instruction) {
         }
 
         // ===== Upper Immediate =====
-        Instruction::Lui   { rd, imm } => { hart.write_reg(rd, imm); hart.pc += 4; }
-        Instruction::Auipc { rd, imm } => { hart.write_reg(rd, hart.pc.wrapping_add(imm)); hart.pc += 4; }
+        Instruction::Lui   { rd, imm } => { hart.write_reg(rd as usize, imm); hart.pc += 4; }
+        Instruction::Auipc { rd, imm } => { hart.write_reg(rd as usize, hart.pc.wrapping_add(imm)); hart.pc += 4; }
 
         // ===== Jump =====
         Instruction::Jal { rd, imm } => {
@@ -143,18 +143,18 @@ pub fn execute(hart: &mut Hart, bus: &mut Bus, inst: Instruction) {
             if target & 0x3 != 0 {
                 hart.trap(CAUSE_INST_MISALIGNED, target);
             } else {
-                hart.write_reg(rd, hart.pc + 4);
+                hart.write_reg(rd as usize, hart.pc + 4);
                 hart.pc = target;
             }
         }
         Instruction::Jalr { rd, rs1, imm } => {
-            let target = ((hart.read_reg(rs1) as i32).wrapping_add(imm) as u32) & !1;
+            let target = ((hart.read_reg(rs1 as usize) as i32).wrapping_add(imm) as u32) & !1;
             if target & 0x3 != 0 {
                 hart.trap(CAUSE_INST_MISALIGNED, target);
             } else {
                 let ret = hart.pc + 4;
                 hart.pc = target;
-                hart.write_reg(rd, ret);
+                hart.write_reg(rd as usize, ret);
             }
         }
 
@@ -191,21 +191,22 @@ pub fn execute(hart: &mut Hart, bus: &mut Bus, inst: Instruction) {
                 }
             }
             let old = hart.read_csr(csr);
+            let uimm = rs1 as u32; // CSRi 指令中 rs1 字段作为 5-bit 无符号立即数
             match op {
-                CsrOp::Rw  => { hart.write_csr(csr, hart.read_reg(rs1)); }
-                CsrOp::Rs  => { if rs1 != 0 { hart.write_csr(csr, old | hart.read_reg(rs1)); } }
-                CsrOp::Rc  => { if rs1 != 0 { hart.write_csr(csr, old & !hart.read_reg(rs1)); } }
-                CsrOp::Rwi => { hart.write_csr(csr, rs1 as u32); }
-                CsrOp::Rsi => { if rs1 != 0 { hart.write_csr(csr, old | rs1 as u32); } }
-                CsrOp::Rci => { if rs1 != 0 { hart.write_csr(csr, old & !(rs1 as u32)); } }
+                CsrOp::Rw  => { hart.write_csr(csr, hart.read_reg(rs1 as usize)); }
+                CsrOp::Rs  => { if rs1 != 0 { hart.write_csr(csr, old | hart.read_reg(rs1 as usize)); } }
+                CsrOp::Rc  => { if rs1 != 0 { hart.write_csr(csr, old & !hart.read_reg(rs1 as usize)); } }
+                CsrOp::Rwi => { hart.write_csr(csr, uimm); }
+                CsrOp::Rsi => { if rs1 != 0 { hart.write_csr(csr, old | uimm); } }
+                CsrOp::Rci => { if rs1 != 0 { hart.write_csr(csr, old & !uimm); } }
             }
-            hart.write_reg(rd, old);
+            hart.write_reg(rd as usize, old);
             hart.pc += 4;
         }
 
         // ===== RV32A (Atomic) =====
         Instruction::Amo { op, rd, rs1, rs2, .. } => {
-            let addr = hart.read_reg(rs1);
+            let addr = hart.read_reg(rs1 as usize);
             let access = if matches!(op, AmoOp::Lr) { AccessType::Read } else { AccessType::Write };
             let pa = match hart.translate(bus, addr, access) {
                 Ok(pa) => pa,
@@ -214,21 +215,21 @@ pub fn execute(hart: &mut Hart, bus: &mut Bus, inst: Instruction) {
             match op {
                 AmoOp::Lr => {
                     let val = bus.read32(pa);
-                    hart.write_reg(rd, val);
+                    hart.write_reg(rd as usize, val);
                     hart.reservation = Some(pa);
                 }
                 AmoOp::Sc => {
                     if hart.reservation == Some(pa) {
-                        bus.write32(pa, hart.read_reg(rs2));
-                        hart.write_reg(rd, 0); // success
+                        bus.write32(pa, hart.read_reg(rs2 as usize));
+                        hart.write_reg(rd as usize, 0); // success
                     } else {
-                        hart.write_reg(rd, 1); // failure
+                        hart.write_reg(rd as usize, 1); // failure
                     }
                     hart.reservation = None;
                 }
                 _ => {
                     let old = bus.read32(pa);
-                    let src = hart.read_reg(rs2);
+                    let src = hart.read_reg(rs2 as usize);
                     let result = match op {
                         AmoOp::Swap => src,
                         AmoOp::Add  => old.wrapping_add(src),
@@ -242,7 +243,7 @@ pub fn execute(hart: &mut Hart, bus: &mut Bus, inst: Instruction) {
                         AmoOp::Lr | AmoOp::Sc => unreachable!(),
                     };
                     bus.write32(pa, result);
-                    hart.write_reg(rd, old);
+                    hart.write_reg(rd as usize, old);
                 }
             }
             hart.pc += 4;

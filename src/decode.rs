@@ -22,9 +22,9 @@ pub fn decode(inst: u32) -> Instruction {
 
 // ===== 字段提取 =====
 
-fn rd(inst: u32) -> usize    { ((inst >> 7)  & 0x1F) as usize }
-fn rs1(inst: u32) -> usize   { ((inst >> 15) & 0x1F) as usize }
-fn rs2(inst: u32) -> usize   { ((inst >> 20) & 0x1F) as usize }
+fn rd(inst: u32) -> u8     { ((inst >> 7)  & 0x1F) as u8 }
+fn rs1(inst: u32) -> u8    { ((inst >> 15) & 0x1F) as u8 }
+fn rs2(inst: u32) -> u8    { ((inst >> 20) & 0x1F) as u8 }
 fn funct3(inst: u32) -> u32  { (inst >> 12) & 0x7 }
 fn funct7(inst: u32) -> u32  { (inst >> 25) & 0x7F }
 fn imm_i(inst: u32) -> i32   { (inst as i32) >> 20 }
@@ -87,10 +87,10 @@ fn decode_i_alu(inst: u32) -> Instruction {
         0x7 => Instruction::I { op: IOp::Andi,  rd, rs1, imm: imm_i(inst) },
         0x1 => {
             if funct7(inst) != 0 { return Instruction::Illegal(inst); }
-            Instruction::Shift { op: ShiftOp::Slli, rd, rs1, shamt: (inst >> 20) & 0x1F }
+            Instruction::Shift { op: ShiftOp::Slli, rd, rs1, shamt: ((inst >> 20) & 0x1F) as u8 }
         }
         0x5 => {
-            let shamt = (inst >> 20) & 0x1F;
+            let shamt = ((inst >> 20) & 0x1F) as u8;
             let op = match funct7(inst) {
                 0x00 => ShiftOp::Srli,
                 0x20 => ShiftOp::Srai,
