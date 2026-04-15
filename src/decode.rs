@@ -71,7 +71,7 @@ fn decode_r(inst: u32) -> Instruction {
         (0x5, 0x01) => ROp::Divu,
         (0x6, 0x01) => ROp::Rem,
         (0x7, 0x01) => ROp::Remu,
-        (f3, f7) => return Instruction::Illegal(inst),
+        _ => return Instruction::Illegal(inst),
     };
     Instruction::R { op, rd, rs1, rs2 }
 }
@@ -107,7 +107,7 @@ fn decode_load(inst: u32) -> Instruction {
     let op = match funct3(inst) {
         0x0 => LoadOp::Lb, 0x1 => LoadOp::Lh, 0x2 => LoadOp::Lw,
         0x4 => LoadOp::Lbu, 0x5 => LoadOp::Lhu,
-        f3 => return Instruction::Illegal(inst),
+        _ => return Instruction::Illegal(inst),
     };
     Instruction::Load { op, rd, rs1, imm }
 }
@@ -116,7 +116,7 @@ fn decode_store(inst: u32) -> Instruction {
     let (rs1, rs2, imm) = (rs1(inst), rs2(inst), imm_s(inst));
     let op = match funct3(inst) {
         0x0 => StoreOp::Sb, 0x1 => StoreOp::Sh, 0x2 => StoreOp::Sw,
-        f3 => return Instruction::Illegal(inst),
+        _ => return Instruction::Illegal(inst),
     };
     Instruction::Store { op, rs1, rs2, imm }
 }
@@ -127,7 +127,7 @@ fn decode_branch(inst: u32) -> Instruction {
         0x0 => BrOp::Beq,  0x1 => BrOp::Bne,
         0x4 => BrOp::Blt,  0x5 => BrOp::Bge,
         0x6 => BrOp::Bltu, 0x7 => BrOp::Bgeu,
-        f3 => return Instruction::Illegal(inst),
+        _ => return Instruction::Illegal(inst),
     };
     Instruction::Branch { op, rs1, rs2, imm }
 }
@@ -149,7 +149,7 @@ fn decode_amo(inst: u32) -> Instruction {
         0x14 => AmoOp::Max,
         0x18 => AmoOp::Minu,
         0x1C => AmoOp::Maxu,
-        f5 => return Instruction::Illegal(inst),
+        _ => return Instruction::Illegal(inst),
     };
     Instruction::Amo { op, rd, rs1, rs2, aq, rl }
 }
@@ -164,7 +164,7 @@ fn decode_system(inst: u32) -> Instruction {
             (0x08, 2) => Instruction::Sret,
             (0x08, 5) => Instruction::Wfi,
             (0x09, _) => Instruction::SfenceVma { rs1: rs1(inst), rs2: rs2(inst) },
-            (f7, r2) => return Instruction::Illegal(inst),
+            _ => return Instruction::Illegal(inst),
         }
     } else {
         let (rd, rs1, csr) = (rd(inst), rs1(inst), ((inst >> 20) & 0xFFF) as u16);

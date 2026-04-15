@@ -31,6 +31,7 @@ pub enum AmoOp { Lr, Sc, Swap, Add, Xor, And, Or, Min, Max, Minu, Maxu }
 // ===== 指令枚举（按格式分组）=====
 
 #[derive(Debug, Clone, Copy)]
+#[allow(dead_code)] // aq/rl、SfenceVma 的 rs1/rs2 将在后续步骤使用
 pub enum Instruction {
     R     { op: ROp,     rd: usize, rs1: usize, rs2: usize },
     I     { op: IOp,     rd: usize, rs1: usize, imm: i32 },

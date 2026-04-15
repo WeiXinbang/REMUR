@@ -1,3 +1,6 @@
+// 部分常量将在后续步骤（性能计数器、PMP 等）启用
+#![allow(dead_code)]
+
 use crate::memory::Memory;
 use crate::decode;
 use crate::execute;

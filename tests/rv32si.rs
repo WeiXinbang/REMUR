@@ -11,8 +11,8 @@ macro_rules! riscv_tests {
     };
 }
 
-riscv_tests! { "rv32ua-p",
-    amoadd_w, amoand_w, amomax_w, amomaxu_w,
-    amomin_w, amominu_w, amoor_w, amoswap_w, amoxor_w,
-    lrsc,
+// rv32si 测试：5/6 通过
+// dirty — 需要 Sv32 页表（Step 3.10）
+riscv_tests! { "rv32si-p",
+    csr, ma_fetch, sbreak, scall, wfi,
 }
