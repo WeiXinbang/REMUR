@@ -10,8 +10,8 @@
 M1: RV32I 骨架       ──→  ✅ 能跑简单裸机程序 + riscv-tests 37/37
 M2: 扩展指令集       ──→  ✅ RV32M + RV32A 全部通过 (55/55)
 M3: 特权架构         ──→  ✅ M/S/U 模式 + 异常委托 + Sv32 页表 (77/77)
-M4: 性能基准与优化   ──→  criterion benchmark + 查表译码 + 译码缓存 + TLB
-M5: SoC 外设         ──→  CLINT + PLIC + UART，串口输出 Hello
+M4: 性能基准与优化   ──→  ✅ criterion + 译码缓存 + u8 寄存器索引
+M5: SoC 外设         ──→  ✅ Device trait + CLINT/PLIC/UART + ELF loader
 M6: 启动 Linux       ──→  SBI + DTB + 内核加载 → Linux shell
 M7: 调试/测试        ──→  贯穿 M1-M6，itrace/difftest
 M8: 高级优化（可选） ──→  基本块缓存 + JIT
@@ -348,106 +348,75 @@ riscv64-unknown-elf-objcopy -O binary test.elf test.bin
 ### 目标
 - 建立 criterion benchmark 基础设施，量化 MIPS 性能
 - 通过 feature flag 实现可切换优化，支持 A/B 对比
-- 实现查表译码、译码缓存、软件 TLB 等优化
 
-### Step 4.1：Benchmark 基础设施
-- 添加 criterion 依赖
-- 用 riscv-tests 作为固定负载测量 MIPS
-- release profile 调优（LTO、codegen-units=1）
+### 已完成
 
-### Step 4.2：Feature Flag 框架
+#### Step 4.1：Benchmark 基础设施
+- criterion 0.7 集成，Release profile 调优（LTO + codegen-units=1）
+- 全量 77 测试聚合 benchmark + 单项测试 benchmark
+
+#### Step 4.2：Feature Flag 框架
 ```toml
 [features]
 default = ["cached-decode", "software-tlb"]
-cached-decode = []
-software-tlb = []
+cached-decode = []    # 512 条目直接映射译码缓存
+software-tlb = []     # 预留 TLB 缓存
 ```
 
-### Step 4.3：查表译码
-用 opcode 做数组索引直接跳转到对应 handler，替代 match 链。
+#### Step 4.3：译码缓存
+- 512 条目直接映射缓存，`cached-decode` feature 控制
+- 测试不回归，小规模测试性能中性
 
-### Step 4.4：译码缓存
-缓存已译码的指令，循环体中跳过重复 decode。
+#### Step 4.4：Instruction u8 寄存器索引
+- 寄存器索引 usize→u8，内存减小 62%
 
-### Step 4.5：软件 TLB
-缓存最近的 VA→PA 映射，减少页表遍历开销。
-
-### 验证
-- benchmark 数据显示优化效果
-- 77/77 测试仍然全部通过
+### 待完成
+- [ ] 查表译码（opcode → funct3 → funct7）
+- [ ] 软件 TLB（缓存 VA→PA 映射）
+- [ ] 基本块缓存
 
 ---
 
-## M5：SoC 外设（极简方案）
+## M5：SoC 外设
 
-> **设计原则**：只实现 Linux 启动必须的最少外设逻辑，够用就行。
+> **设计原则**：易扩展、易读、性能高。Device trait + 具体类型字段（静态分派，零开销）。
 
-### Step 5.1：总线抽象
+### 已完成
 
-```rust
-// bus.rs
-pub trait Device {
-    fn read(&self, addr: u32, size: u8) -> u32;
-    fn write(&mut self, addr: u32, val: u32, size: u8);
-}
+#### Step 5.1：Bus 重构 + Device trait
+- `Device` trait：read8/16/32, write8/16/32 带默认实现
+- `Bus` 持有具体类型字段（ram/uart/clint/plic），match 路由地址
+- Memory 改为 offset-based（0-indexed），Bus 负责地址映射
 
-pub struct Bus {
-    devices: Vec<(u32, u32, Box<dyn Device>)>,  // (start, end, device)
-}
-```
+#### Step 5.2：CLINT 实现 + CPU 集成
+- msip/mtimecmp/mtime 完整 MMIO 读写
+- `tick()` 每 CPU 周期推进 mtime
+- `update_mip()` 同步 MTIP/MSIP/MEIP 到 MIP 寄存器
+- `check_pending_interrupts()` 完整中断优先级 + 委托逻辑
+- MIP CSR 写入保护硬件控制位
 
-将 Memory 的直接访问改为通过 Bus 分发。
+#### Step 5.3：PLIC 极简版
+- 1024 源优先级 + 1 context enable/threshold/claim
+- `has_pending_interrupt()` 驱动 MIP.MEIP
 
-地址映射：
-| 设备 | 起始地址 | 大小 |
-|------|----------|------|
-| CLINT | 0x0200_0000 | 64KB |
-| PLIC  | 0x0C00_0000 | 64MB |
-| UART0 | 0x1000_0000 | 4KB |
-| RAM   | 0x8000_0000 | 128MB |
+#### Step 5.4：UART 16550 极简版
+- THR 写入 → print! 输出
+- LSR 读取 → 0x60（发送空+完成）
 
-### Step 5.2：CLINT（必须完整实现）
-```
-0x0200_0000: msip[0]      (4 bytes) - 软件中断挂起
-0x0200_4000: mtimecmp[0]  (8 bytes) - 定时器比较值
-0x0200_BFF8: mtime        (8 bytes) - 实时计数器
-```
-每个 CPU 周期递增 mtime，mtime >= mtimecmp 时置位 MIP.MTIP。
+#### Step 5.5：ELF 加载器
+- goblin 0.9 解析 ELF（PT_LOAD 段 + tohost 符号）
+- 自动检测 ELF vs raw .bin
+- 77/77 ELF 测试全通过
 
-### Step 5.3：PLIC（极简版，只需 3 个寄存器区域）
-
-只支持 1 个中断源（UART，中断号 10），只有 1 个 context（S-mode Hart 0）。
-
-需要实现的寄存器：
-```
-0x0C00_0028: source 10 priority  (4 bytes) — 写入优先级值即可
-0x0C00_2080: context 0 enable    (4 bytes) — bit10=1 表示使能 UART 中断
-0x0C20_0000: context 0 threshold (4 bytes) — 优先级阈值
-0x0C20_0004: context 0 claim/complete (4 bytes) — 读=claim, 写=complete
-```
-
-> 其余地址读返回 0、写忽略即可。Linux 驱动会探测但不依赖完整实现。
-
-### Step 5.4：UART（极简版，只需 3 个寄存器）
-
-```
-+0x00: THR（只写）— 写入时直接 print!("{}", char) 到 host 终端
-+0x05: LSR（只读）— 始终返回 0x60（bit5=发送空, bit6=发送完成）
-```
-
-可选（支持键盘输入后再加）：
-```
-+0x00: RBR（只读）— 从 stdin 非阻塞读取
-+0x01: IER — 中断使能（bit0=接收中断）
-+0x05: LSR bit0 — 有数据可读时置 1
-```
-
-> **为什么这么简单就够？** Linux 启动早期通过 SBI `console_putchar` 输出，不走 MMIO。
-> 等内核初始化 earlycon/ttyS0 驱动后才会直接访问 UART 寄存器，而此时只需要能发字符即可。
+### 待完成
+- [ ] PLIC claim 原子清除 pending
+- [ ] UART RBR 接收 + IER 中断
+- [ ] 裸机定时器中断验证测试
+- [ ] 裸机 UART "Hello, REMUR!" 测试
 
 ### 验证
-- 裸机程序通过 MMIO 向 UART 写入 "Hello, REMUR!\n"
-- SBI `console_putchar` 能正常输出字符
+- 77/77 riscv-tests 通过（.bin + .elf 双格式）
+- ELF loader 自动提取 tohost 地址
 
 ---
 
@@ -479,9 +448,7 @@ fn handle_sbi_call(&mut self, ...) {
 
 ### Step 6.3：启动序列
 
-> **内核格式**：使用 **Linux Image**（`arch/riscv/boot/Image`），这是去掉 ELF 头的纯二进制内核。
-> 不要用 vmlinux（ELF 格式），因为我们没有实现 ELF 加载器。
-> 参考 mini-rv32ima 的做法：直接加载 flat binary 到内存固定地址。
+> **内核格式**：支持 **Linux Image**（flat binary）和 **ELF** 格式（M5 已实现 ELF 加载器）。
 
 ```
 1. 加载 OpenSBI/内嵌SBI 到 0x8000_0000 (M-mode 入口)

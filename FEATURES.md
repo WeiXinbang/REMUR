@@ -187,14 +187,15 @@
 - [x] 存储页面错误（Store page fault）
 
 ### 2.5 中断处理
-- [ ] M-mode 软件中断（MSI）
-- [ ] M-mode 定时器中断（MTI）
-- [ ] M-mode 外部中断（MEI）
+- [x] M-mode 软件中断（MSI）— CLINT msip 驱动
+- [x] M-mode 定时器中断（MTI）— CLINT mtime/mtimecmp 驱动
+- [x] M-mode 外部中断（MEI）— PLIC pending 驱动
 - [ ] S-mode 软件中断（SSI）
 - [ ] S-mode 定时器中断（STI）
 - [ ] S-mode 外部中断（SEI）
 - [x] 中断委托机制（medeleg/mideleg）
-- [ ] 中断优先级判断
+- [x] 中断优先级判断（MEI > MSI > MTI > SEI > SSI > STI）
+- [x] MIP 硬件位保护（MTIP/MSIP/MEIP 只由硬件控制，CSR 写入不可修改）
 
 ### 2.6 Sv32 虚拟内存
 - [x] 两级页表遍历（VPN[1] → VPN[0] → PPN）
@@ -222,11 +223,11 @@
 ## 三、SoC 外设
 
 ### 3.1 总线与地址空间
-- [ ] 统一 MMIO 分发框架
-- [ ] `Device` trait（统一 read/write 接口）
-- [ ] 地址区间注册与查找
+- [x] 统一 MMIO 分发框架（match 地址路由）
+- [x] `Device` trait（read8/16/32, write8/16/32 带默认实现）
+- [x] 具体类型字段 + 静态分派（零开销，非 Box<dyn>）
 
-#### 默认地址映射（可配置）
+#### 默认地址映射
 | 设备 | 起始地址 | 大小 |
 |------|----------|------|
 | CLINT   | 0x0200_0000 | 64KB |
@@ -235,24 +236,30 @@
 | RAM     | 0x8000_0000 | 128MB+ |
 
 ### 3.2 CLINT（Core Local Interruptor）
-- [ ] mtime 寄存器（64 位实时计数器）
-- [ ] mtimecmp 寄存器（定时器比较值）
-- [ ] 定时器中断产生（mtime >= mtimecmp 时触发 MTI）
-- [ ] MSIP 寄存器（软件中断触发）
+- [x] mtime 寄存器（64 位实时计数器，每 CPU 周期递增）
+- [x] mtimecmp 寄存器（定时器比较值，初始 u64::MAX）
+- [x] 定时器中断产生（mtime >= mtimecmp 时置位 MIP.MTIP）
+- [x] MSIP 寄存器（软件中断触发，置位 MIP.MSIP）
+- [x] CLINT 集成到 CPU step()（每步 tick + update_mip）
 
-### 3.3 PLIC（极简版，仅支持 UART 中断）
-- [ ] source 10 (UART) 优先级寄存器
-- [ ] context 0 中断使能寄存器（bit10 控制 UART）
-- [ ] context 0 优先级阈值寄存器
-- [ ] context 0 claim/complete 寄存器
-- [ ] 其余地址读返回 0、写忽略
+### 3.3 PLIC（极简版）
+- [x] 1024 源优先级数组
+- [x] 1 context enable/threshold/claim
+- [x] set_pending() / has_pending_interrupt() 接口
+- [ ] claim 读取原子清除 pending（当前未清除）
 
-### 3.4 UART（极简版）
-- [ ] THR（发送保持寄存器）→ 写入时输出到终端
-- [ ] LSR（线路状态寄存器）→ 始终返回 0x60（发送空+发送完成）
-- [ ] RBR（接收缓冲寄存器）→ 读取终端输入（可选，后期加）
-- [ ] IER（中断使能）→ 接收中断触发（可选，后期加）
-- [ ] 其余寄存器（LCR/MCR/DLL/DLM）读返回 0、写忽略
+### 3.4 UART（极简版 16550）
+- [x] THR（发送保持寄存器）→ 写入时 print! 到终端
+- [x] LSR（线路状态寄存器）→ 始终返回 0x60（发送空+发送完成）
+- [ ] RBR（接收缓冲寄存器）→ 读取终端输入
+- [ ] IER（中断使能）→ 接收中断触发
+
+### 3.5 ELF 加载器
+- [x] goblin 0.9 解析 ELF 文件（PT_LOAD 段加载）
+- [x] 自动提取 tohost 符号地址（无需手动指定）
+- [x] BSS 段零填充
+- [x] 自动检测 ELF vs raw .bin 格式
+- [x] 77/77 ELF 测试通过验证
 
 ---
 
@@ -335,10 +342,13 @@ cargo bench -- --baseline before-opt
 | dirty (Sv32 页表) | ~69 µs | 最复杂的特权测试 |
 | **全量 77 测试** | **~5.6 ms** | 77 个测试跑一遍 |
 
-### 6.4 计划中的优化
-- [ ] Feature flag 框架（`cached-decode`, `software-tlb`）
+### 6.4 已完成的优化
+- [x] Feature flag 框架（`cached-decode`, `software-tlb`）
+- [x] 译码缓存（512 条目直接映射，`cached-decode` feature）
+- [x] Instruction 结构体 u8 寄存器索引（内存减小 62%）
+
+### 6.5 计划中的优化
 - [ ] 二级查表译码（opcode → funct3 → funct7 函数指针数组）
-- [ ] 译码缓存（循环体中跳过重复 decode）
 - [ ] 软件 TLB（缓存 VA→PA 映射，减少页表遍历）
 - [ ] 基本块缓存（已译码指令序列复用）
 - [ ] Host 内存直接映射（减少地址翻译）
