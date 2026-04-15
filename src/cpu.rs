@@ -45,7 +45,7 @@ pub const SATP: u16       = 0x180;
 
 // sstatus 可见位掩码（S-mode 只能看到这些 mstatus 位）
 pub const SSTATUS_MASK: u32 = MSTATUS_SIE | MSTATUS_SPIE | MSTATUS_SPP
-    | MSTATUS_FS_MASK | (1 << 18) /* SUM */ | (1 << 19) /* MXR */;
+    | MSTATUS_FS_MASK | MSTATUS_SUM | MSTATUS_MXR;
 
 // sie/sip 可见位掩码（S-mode 中断位：SSIE=1, STIE=5, SEIE=9）
 pub const SIE_MASK: u32 = (1 << 1) | (1 << 5) | (1 << 9);
@@ -59,6 +59,9 @@ pub const MSTATUS_SPP: u32   = 1 << 8;
 pub const MSTATUS_MPP_MASK: u32 = 0x3 << 11;
 pub const MSTATUS_MPP_SHIFT: u32 = 11;
 pub const MSTATUS_FS_MASK: u32 = 0x3 << 13;
+pub const MSTATUS_MPRV: u32  = 1 << 17;
+pub const MSTATUS_SUM: u32   = 1 << 18;
+pub const MSTATUS_MXR: u32   = 1 << 19;
 pub const MSTATUS_TVM: u32   = 1 << 20;
 pub const MSTATUS_TW: u32    = 1 << 21;
 pub const MSTATUS_TSR: u32   = 1 << 22;
@@ -72,6 +75,21 @@ pub const CAUSE_STORE_MISALIGNED: u32  = 6;
 pub const CAUSE_ECALL_U: u32           = 8;
 pub const CAUSE_ECALL_S: u32           = 9;
 pub const CAUSE_ECALL_M: u32           = 11;
+pub const CAUSE_INST_PAGE_FAULT: u32   = 12;
+pub const CAUSE_LOAD_PAGE_FAULT: u32   = 13;
+pub const CAUSE_STORE_PAGE_FAULT: u32  = 15;
+
+// Sv32 页表项位域
+const PTE_V: u32 = 1 << 0;
+const PTE_R: u32 = 1 << 1;
+const PTE_W: u32 = 1 << 2;
+const PTE_X: u32 = 1 << 3;
+const PTE_U: u32 = 1 << 4;
+const PTE_A: u32 = 1 << 6;
+const PTE_D: u32 = 1 << 7;
+
+/// 内存访问类型（用于地址翻译）
+pub enum AccessType { Execute, Read, Write }
 
 /// RISC-V Hart（硬件线程）
 pub struct Hart {
@@ -207,9 +225,13 @@ impl Hart {
         self.privilege = mpp;
         // 恢复 MIE ← MPIE, MPIE ← 1, MPP ← U(0)
         let mpie = (mstatus & MSTATUS_MPIE) != 0;
-        let new_mstatus = (mstatus & !MSTATUS_MIE & !MSTATUS_MPIE & !MSTATUS_MPP_MASK)
+        let mut new_mstatus = (mstatus & !MSTATUS_MIE & !MSTATUS_MPIE & !MSTATUS_MPP_MASK)
             | (if mpie { MSTATUS_MIE } else { 0 })
             | MSTATUS_MPIE; // MPIE 设为 1
+        // xPP ≠ M → MPRV = 0
+        if mpp != 3 {
+            new_mstatus &= !MSTATUS_MPRV;
+        }
         self.write_csr(MSTATUS, new_mstatus);
 
         self.pc = self.read_csr(MEPC);
@@ -256,6 +278,122 @@ impl Hart {
         self.csrs[MCYCLEH as usize] = self.csrs[MINSTRETH as usize];
     }
 
+    /// 返回 Load/Store 的有效特权级（处理 MPRV）
+    fn effective_priv(&self) -> u8 {
+        if self.privilege == 3 {
+            let mstatus = self.csrs[MSTATUS as usize];
+            if (mstatus & MSTATUS_MPRV) != 0 {
+                return ((mstatus & MSTATUS_MPP_MASK) >> MSTATUS_MPP_SHIFT) as u8;
+            }
+        }
+        self.privilege
+    }
+
+    /// Sv32 虚拟地址翻译。返回物理地址或 (cause, tval) 页错误
+    pub fn translate(&self, bus: &Bus, va: u32, access: AccessType) -> Result<u32, (u32, u32)> {
+        let priv_level = match access {
+            AccessType::Execute => self.privilege,
+            _ => self.effective_priv(),
+        };
+        // M-mode 不翻译
+        if priv_level == 3 {
+            return Ok(va);
+        }
+
+        let satp = self.csrs[SATP as usize];
+        if (satp >> 31) == 0 {
+            return Ok(va); // Bare 模式
+        }
+
+        let fault_cause = match access {
+            AccessType::Execute => CAUSE_INST_PAGE_FAULT,
+            AccessType::Read    => CAUSE_LOAD_PAGE_FAULT,
+            AccessType::Write   => CAUSE_STORE_PAGE_FAULT,
+        };
+
+        // Sv32 两级页表遍历
+        let root_ppn = satp & 0x003F_FFFF;
+        let vpn = [(va >> 12) & 0x3FF, (va >> 22) & 0x3FF];
+        let offset = va & 0xFFF;
+        let mut a = root_ppn << 12;
+        let mut level: i32 = 1;
+
+        let pte = loop {
+            let pte_addr = a.wrapping_add(vpn[level as usize] * 4);
+            let pte = bus.ram.read32(pte_addr);
+
+            // 无效 PTE 或保留编码 (W=1, R=0)
+            if (pte & PTE_V) == 0 || ((pte & PTE_R) == 0 && (pte & PTE_W) != 0) {
+                return Err((fault_cause, va));
+            }
+
+            // 叶子 PTE（R=1 或 X=1）
+            if (pte & PTE_R) != 0 || (pte & PTE_X) != 0 {
+                break pte;
+            }
+
+            // 非叶子：下一级
+            level -= 1;
+            if level < 0 {
+                return Err((fault_cause, va));
+            }
+            a = ((pte >> 10) & 0x003F_FFFF) << 12;
+        };
+
+        let mstatus = self.csrs[MSTATUS as usize];
+
+        // 权限检查
+        match access {
+            AccessType::Execute => {
+                if (pte & PTE_X) == 0 { return Err((fault_cause, va)); }
+            }
+            AccessType::Read => {
+                let mxr = (mstatus & MSTATUS_MXR) != 0;
+                if (pte & PTE_R) == 0 && !(mxr && (pte & PTE_X) != 0) {
+                    return Err((fault_cause, va));
+                }
+            }
+            AccessType::Write => {
+                if (pte & PTE_W) == 0 { return Err((fault_cause, va)); }
+            }
+        }
+
+        // U/S 权限
+        if (pte & PTE_U) != 0 {
+            if priv_level == 1 && (mstatus & MSTATUS_SUM) == 0 {
+                return Err((fault_cause, va));
+            }
+        } else if priv_level == 0 {
+            return Err((fault_cause, va));
+        }
+
+        // 超级页对齐检查：level 1 时 PPN[0] 必须为 0
+        if level == 1 && ((pte >> 10) & 0x3FF) != 0 {
+            return Err((fault_cause, va));
+        }
+
+        // A/D 位检查（不在硬件中设置，触发页错误让软件处理）
+        if (pte & PTE_A) == 0 {
+            return Err((fault_cause, va));
+        }
+        if matches!(access, AccessType::Write) && (pte & PTE_D) == 0 {
+            return Err((fault_cause, va));
+        }
+
+        // 构造物理地址
+        let pa = if level == 1 {
+            // 超级页：PA = PPN[1] : VPN[0] : offset
+            let ppn1 = (pte >> 20) & 0xFFF;
+            (ppn1 << 22) | (vpn[0] << 12) | offset
+        } else {
+            // 4KB 页：PA = PPN : offset
+            let ppn = (pte >> 10) & 0x003F_FFFF;
+            (ppn << 12) | offset
+        };
+
+        Ok(pa)
+    }
+
     /// 取指 → 译码 → 执行
     pub fn step(&mut self, bus: &mut Bus) {
         if self.pc & 0x3 != 0 {
@@ -263,7 +401,15 @@ impl Hart {
             self.increment_counters();
             return;
         }
-        let raw = bus.read32(self.pc);
+        let phys_pc = match self.translate(bus, self.pc, AccessType::Execute) {
+            Ok(pa) => pa,
+            Err((cause, tval)) => {
+                self.trap(cause, tval);
+                self.increment_counters();
+                return;
+            }
+        };
+        let raw = bus.read32(phys_pc);
         let inst = decode::decode(raw);
         execute::execute(self, bus, inst);
         self.increment_counters();

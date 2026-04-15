@@ -11,8 +11,7 @@ macro_rules! riscv_tests {
     };
 }
 
-// rv32si 测试：5/6 通过
-// dirty — 需要 Sv32 页表（Step 3.10）
+// rv32si 测试：6/6 全部通过
 riscv_tests! { "rv32si-p",
-    csr, ma_fetch, sbreak, scall, wfi,
+    csr, dirty, ma_fetch, sbreak, scall, wfi,
 }

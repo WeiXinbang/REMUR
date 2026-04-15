@@ -1,5 +1,5 @@
 use crate::bus::Bus;
-use crate::cpu::{Hart, CAUSE_ECALL_U, CAUSE_ECALL_S, CAUSE_ECALL_M,
+use crate::cpu::{Hart, AccessType, CAUSE_ECALL_U, CAUSE_ECALL_S, CAUSE_ECALL_M,
                   CAUSE_ILLEGAL_INST, CAUSE_INST_MISALIGNED,
                   MSTATUS, MSTATUS_TVM, MSTATUS_TSR, MSTATUS_TW,
                   SATP, MCOUNTEREN, SCOUNTEREN,
@@ -78,12 +78,16 @@ pub fn execute(hart: &mut Hart, bus: &mut Bus, inst: Instruction) {
         // ===== Load =====
         Instruction::Load { op, rd, rs1, imm } => {
             let addr = (hart.read_reg(rs1) as i32).wrapping_add(imm) as u32;
+            let pa = match hart.translate(bus, addr, AccessType::Read) {
+                Ok(pa) => pa,
+                Err((cause, tval)) => { hart.trap(cause, tval); return; }
+            };
             let val = match op {
-                LoadOp::Lb  => bus.read8(addr) as i8 as i32 as u32,
-                LoadOp::Lh  => bus.read16(addr) as i16 as i32 as u32,
-                LoadOp::Lw  => bus.read32(addr),
-                LoadOp::Lbu => bus.read8(addr) as u32,
-                LoadOp::Lhu => bus.read16(addr) as u32,
+                LoadOp::Lb  => bus.read8(pa) as i8 as i32 as u32,
+                LoadOp::Lh  => bus.read16(pa) as i16 as i32 as u32,
+                LoadOp::Lw  => bus.read32(pa),
+                LoadOp::Lbu => bus.read8(pa) as u32,
+                LoadOp::Lhu => bus.read16(pa) as u32,
             };
             hart.write_reg(rd, val);
             hart.pc += 4;
@@ -92,11 +96,15 @@ pub fn execute(hart: &mut Hart, bus: &mut Bus, inst: Instruction) {
         // ===== Store =====
         Instruction::Store { op, rs1, rs2, imm } => {
             let addr = (hart.read_reg(rs1) as i32).wrapping_add(imm) as u32;
+            let pa = match hart.translate(bus, addr, AccessType::Write) {
+                Ok(pa) => pa,
+                Err((cause, tval)) => { hart.trap(cause, tval); return; }
+            };
             let val = hart.read_reg(rs2);
             match op {
-                StoreOp::Sb => bus.write8(addr, val as u8),
-                StoreOp::Sh => bus.write16(addr, val as u16),
-                StoreOp::Sw => bus.write32(addr, val),
+                StoreOp::Sb => bus.write8(pa, val as u8),
+                StoreOp::Sh => bus.write16(pa, val as u16),
+                StoreOp::Sw => bus.write32(pa, val),
             }
             hart.pc += 4;
         }
@@ -198,15 +206,20 @@ pub fn execute(hart: &mut Hart, bus: &mut Bus, inst: Instruction) {
         // ===== RV32A (Atomic) =====
         Instruction::Amo { op, rd, rs1, rs2, .. } => {
             let addr = hart.read_reg(rs1);
+            let access = if matches!(op, AmoOp::Lr) { AccessType::Read } else { AccessType::Write };
+            let pa = match hart.translate(bus, addr, access) {
+                Ok(pa) => pa,
+                Err((cause, tval)) => { hart.trap(cause, tval); return; }
+            };
             match op {
                 AmoOp::Lr => {
-                    let val = bus.read32(addr);
+                    let val = bus.read32(pa);
                     hart.write_reg(rd, val);
-                    hart.reservation = Some(addr);
+                    hart.reservation = Some(pa);
                 }
                 AmoOp::Sc => {
-                    if hart.reservation == Some(addr) {
-                        bus.write32(addr, hart.read_reg(rs2));
+                    if hart.reservation == Some(pa) {
+                        bus.write32(pa, hart.read_reg(rs2));
                         hart.write_reg(rd, 0); // success
                     } else {
                         hart.write_reg(rd, 1); // failure
@@ -214,7 +227,7 @@ pub fn execute(hart: &mut Hart, bus: &mut Bus, inst: Instruction) {
                     hart.reservation = None;
                 }
                 _ => {
-                    let old = bus.read32(addr);
+                    let old = bus.read32(pa);
                     let src = hart.read_reg(rs2);
                     let result = match op {
                         AmoOp::Swap => src,
@@ -228,7 +241,7 @@ pub fn execute(hart: &mut Hart, bus: &mut Bus, inst: Instruction) {
                         AmoOp::Maxu => old.max(src),
                         AmoOp::Lr | AmoOp::Sc => unreachable!(),
                     };
-                    bus.write32(addr, result);
+                    bus.write32(pa, result);
                     hart.write_reg(rd, old);
                 }
             }
