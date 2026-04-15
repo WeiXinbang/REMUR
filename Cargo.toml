@@ -6,5 +6,17 @@ license = "AGPL-3.0-or-later"
 
 [dependencies]
 
+[dev-dependencies]
+criterion = "0.7"
+
 [build-dependencies]
 cc = "1.0"
+
+[profile.release]
+lto = true
+codegen-units = 1
+opt-level = 3
+
+[[bench]]
+name = "isa_benchmark"
+harness = false
