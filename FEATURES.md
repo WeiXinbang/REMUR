@@ -246,7 +246,9 @@
 - [x] 1024 源优先级数组
 - [x] 1 context enable/threshold/claim
 - [x] set_pending() / has_pending_interrupt() 接口
-- [ ] claim 读取原子清除 pending（当前未清除）
+- [x] claim 读取原子清除 pending + 设置 claimed 位
+- [x] complete 清除 claimed 位（正确语义）
+- [x] 优先级选择（最高优先级 IRQ 优先 claim）
 
 ### 3.4 UART（极简版 16550）
 - [x] THR（发送保持寄存器）→ 写入时 print! 到终端
@@ -257,9 +259,16 @@
 ### 3.5 ELF 加载器
 - [x] goblin 0.9 解析 ELF 文件（PT_LOAD 段加载）
 - [x] 自动提取 tohost 符号地址（无需手动指定）
+- [x] 自动提取 begin_signature/end_signature 符号（arch-test 用）
 - [x] BSS 段零填充
 - [x] 自动检测 ELF vs raw .bin 格式
 - [x] 77/77 ELF 测试通过验证
+
+### 3.6 CLI 功能
+- [x] `--tohost <hex>` 手动指定 tohost 地址
+- [x] `--signature <file>` 运行后导出签名区域（arch-test 格式，每行 8 位 hex）
+- [x] `--cycles <n>` 指定最大执行周期数（默认 10M）
+- [x] 向后兼容旧的位置参数格式
 
 ---
 
@@ -295,7 +304,15 @@
 - [x] riscv-tests RV32A 全部通过（10/10）
 - [x] riscv-tests rv32mi 全部通过（16/16）
 - [x] riscv-tests rv32si 全部通过（6/6）
+- [x] 裸机外设集成测试（7/7）— UART/CLINT/PLIC 手写机器码验证
+- [ ] riscv-arch-test 官方合规测试（脚本就绪，待运行）
 - [ ] 自定义裸机测试程序
+
+### 5.2 测试基础设施
+- [x] `scripts/compile_tests.sh` — 交叉编译 riscv-tests
+- [x] `scripts/pre-push` — git pre-push hook，push 前自动 cargo test
+- [x] `scripts/run-arch-test.sh` — WSL/Linux 下一键运行 riscv-arch-test
+- [x] `config/remur/remur-rv32ima/` — arch-test 框架配置（YAML + 宏 + 链接脚本）
 
 ### 5.2 调试工具
 - [ ] itrace：指令反汇编追踪（可开关）

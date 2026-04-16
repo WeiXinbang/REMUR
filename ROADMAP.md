@@ -11,7 +11,7 @@ M1: RV32I 骨架       ──→  ✅ 能跑简单裸机程序 + riscv-tests 37/
 M2: 扩展指令集       ──→  ✅ RV32M + RV32A 全部通过 (55/55)
 M3: 特权架构         ──→  ✅ M/S/U 模式 + 异常委托 + Sv32 页表 (77/77)
 M4: 性能基准与优化   ──→  ✅ criterion + 译码缓存 + u8 寄存器索引
-M5: SoC 外设         ──→  ✅ Device trait + CLINT/PLIC/UART + ELF loader
+M5: SoC 外设         ──→  ✅ Device trait + CLINT/PLIC/UART + ELF loader + arch-test 适配 (84/84)
 M6: 启动 Linux       ──→  SBI + DTB + 内核加载 → Linux shell
 M7: 调试/测试        ──→  贯穿 M1-M6，itrace/difftest
 M8: 高级优化（可选） ──→  基本块缓存 + JIT
@@ -408,15 +408,32 @@ software-tlb = []     # 预留 TLB 缓存
 - 自动检测 ELF vs raw .bin
 - 77/77 ELF 测试全通过
 
+#### Step 5.6：PLIC claim 修复 + Device trait 读副作用
+- Device trait read 方法改为 `&mut self`（MMIO 读取常有副作用）
+- PLIC claim 原子清除 pending + 设置 claimed
+- PLIC complete 清除 claimed（而非 pending）
+
+#### Step 5.7：裸机外设集成测试
+- 7 个手写机器码测试（UART/CLINT/PLIC）
+- 涵盖：写入输出、LSR 状态、mtime 递增、定时器中断、软件中断、PLIC claim/priority
+
+#### Step 5.8：签名导出 + arch-test 框架适配
+- ELF 加载器提取 `begin_signature`/`end_signature` 符号
+- CLI `--signature <file>` 导出签名区域（每行 8 位 hex）
+- CLI `--tohost <hex>` / `--cycles <n>` 参数
+- `config/remur/remur-rv32ima/` — 完整 arch-test 配置
+- `scripts/run-arch-test.sh` — 一键合规测试脚本
+- `scripts/pre-push` — git push 前自动 cargo test
+
 ### 待完成
-- [ ] PLIC claim 原子清除 pending
 - [ ] UART RBR 接收 + IER 中断
-- [ ] 裸机定时器中断验证测试
-- [ ] 裸机 UART "Hello, REMUR!" 测试
 
 ### 验证
-- 77/77 riscv-tests 通过（.bin + .elf 双格式）
-- ELF loader 自动提取 tohost 地址
+- 84/84 测试通过（77 riscv-tests + 7 外设集成测试）
+- ELF loader 自动提取 tohost + 签名区域符号
+- `--signature` 选项可导出 arch-test 格式签名
+- arch-test 框架配置就绪（`config/remur/remur-rv32ima/`）
+- pre-push hook 保障每次推送前测试通过
 
 ---
 
