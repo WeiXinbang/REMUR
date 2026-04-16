@@ -1,0 +1,15 @@
+#!/bin/bash
+# pre-push hook: push 前自动运行 cargo test
+# 安装方式: cp scripts/pre-push .git/hooks/pre-push && chmod +x .git/hooks/pre-push
+set -e
+
+echo "🔍 Pre-push: running cargo test..."
+
+# 快速编译检查 + 全部测试
+if cargo test --quiet 2>&1; then
+    echo "✅ All tests passed. Pushing..."
+else
+    echo "❌ Tests failed! Push aborted."
+    echo "   Fix the issues and try again."
+    exit 1
+fi

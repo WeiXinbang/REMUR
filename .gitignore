@@ -6,6 +6,9 @@
 *.elf
 tests/bins/
 
+# riscv-arch-test（由脚本自动 clone）
+/riscv-arch-test/
+
 # IDE
 .vscode/
 .idea/
