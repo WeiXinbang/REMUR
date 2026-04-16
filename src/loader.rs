@@ -11,6 +11,8 @@ pub fn is_elf(data: &[u8]) -> bool {
 pub struct ElfInfo {
     pub entry: u32,
     pub tohost: Option<u32>,
+    pub begin_signature: Option<u32>,
+    pub end_signature: Option<u32>,
 }
 
 /// 加载 ELF 文件：解析 PT_LOAD 段到物理内存，返回入口地址和 tohost 符号地址
@@ -37,11 +39,16 @@ pub fn load_elf(data: &[u8], bus: &mut Bus) -> ElfInfo {
         }
     }
 
-    let tohost = elf.syms.iter()
-        .find(|sym| {
-            elf.strtab.get_at(sym.st_name).map_or(false, |name| name == "tohost")
-        })
-        .map(|sym| sym.st_value as u32);
+    let find_sym = |name: &str| -> Option<u32> {
+        elf.syms.iter()
+            .find(|sym| elf.strtab.get_at(sym.st_name).map_or(false, |n| n == name))
+            .map(|sym| sym.st_value as u32)
+    };
 
-    ElfInfo { entry: elf.entry as u32, tohost }
+    ElfInfo {
+        entry: elf.entry as u32,
+        tohost: find_sym("tohost"),
+        begin_signature: find_sym("begin_signature"),
+        end_signature: find_sym("end_signature"),
+    }
 }
