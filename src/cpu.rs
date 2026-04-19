@@ -7,90 +7,92 @@ use crate::decode;
 use crate::execute;
 
 // CSR 地址常量
-pub const MSTATUS: u16   = 0x300;
-pub const MISA: u16      = 0x301;
-pub const MEDELEG: u16   = 0x302;
-pub const MIDELEG: u16   = 0x303;
-pub const MIE: u16       = 0x304;
-pub const MTVEC: u16     = 0x305;
+pub const MSTATUS: u16 = 0x300;
+pub const MISA: u16 = 0x301;
+pub const MEDELEG: u16 = 0x302;
+pub const MIDELEG: u16 = 0x303;
+pub const MIE: u16 = 0x304;
+pub const MTVEC: u16 = 0x305;
 pub const MCOUNTEREN: u16 = 0x306;
-pub const MSCRATCH: u16  = 0x340;
-pub const MEPC: u16      = 0x341;
-pub const MCAUSE: u16    = 0x342;
-pub const MTVAL: u16     = 0x343;
-pub const MIP: u16       = 0x344;
-pub const PMPCFG0: u16   = 0x3A0;
-pub const PMPADDR0: u16  = 0x3B0;
-pub const MHARTID: u16   = 0xF14;
-pub const MCYCLE: u16    = 0xB00;
-pub const MINSTRET: u16  = 0xB02;
-pub const MCYCLEH: u16   = 0xB80;
+pub const MSCRATCH: u16 = 0x340;
+pub const MEPC: u16 = 0x341;
+pub const MCAUSE: u16 = 0x342;
+pub const MTVAL: u16 = 0x343;
+pub const MIP: u16 = 0x344;
+pub const PMPCFG0: u16 = 0x3A0;
+pub const PMPADDR0: u16 = 0x3B0;
+pub const MHARTID: u16 = 0xF14;
+pub const MCYCLE: u16 = 0xB00;
+pub const MINSTRET: u16 = 0xB02;
+pub const MCYCLEH: u16 = 0xB80;
 pub const MINSTRETH: u16 = 0xB82;
 
 // 只读影子计数器（U/S-mode 可访问，受 mcounteren 限制）
-pub const CYCLE: u16     = 0xC00;
-pub const INSTRET: u16   = 0xC02;
-pub const CYCLEH: u16    = 0xC80;
-pub const INSTRETH: u16  = 0xC82;
+pub const CYCLE: u16 = 0xC00;
+pub const TIME: u16 = 0xC01;
+pub const INSTRET: u16 = 0xC02;
+pub const CYCLEH: u16 = 0xC80;
+pub const TIMEH: u16 = 0xC81;
+pub const INSTRETH: u16 = 0xC82;
 
 // S-mode CSR 地址
-pub const SSTATUS: u16    = 0x100;
-pub const SIE: u16        = 0x104;
-pub const STVEC: u16      = 0x105;
+pub const SSTATUS: u16 = 0x100;
+pub const SIE: u16 = 0x104;
+pub const STVEC: u16 = 0x105;
 pub const SCOUNTEREN: u16 = 0x106;
-pub const SSCRATCH: u16   = 0x140;
-pub const SEPC: u16       = 0x141;
-pub const SCAUSE: u16     = 0x142;
-pub const STVAL: u16      = 0x143;
-pub const SIP: u16        = 0x144;
-pub const SATP: u16       = 0x180;
+pub const SSCRATCH: u16 = 0x140;
+pub const SEPC: u16 = 0x141;
+pub const SCAUSE: u16 = 0x142;
+pub const STVAL: u16 = 0x143;
+pub const SIP: u16 = 0x144;
+pub const SATP: u16 = 0x180;
 
 // sstatus 可见位掩码（S-mode 只能看到这些 mstatus 位）
-pub const SSTATUS_MASK: u32 = MSTATUS_SIE | MSTATUS_SPIE | MSTATUS_SPP
-    | MSTATUS_FS_MASK | MSTATUS_SUM | MSTATUS_MXR;
+pub const SSTATUS_MASK: u32 =
+    MSTATUS_SIE | MSTATUS_SPIE | MSTATUS_SPP | MSTATUS_FS_MASK | MSTATUS_SUM | MSTATUS_MXR;
 
 // sie/sip 可见位掩码（S-mode 中断位：SSIE=1, STIE=5, SEIE=9）
 pub const SIE_MASK: u32 = (1 << 1) | (1 << 5) | (1 << 9);
 
 // mstatus 位域
-pub const MSTATUS_SIE: u32   = 1 << 1;
-pub const MSTATUS_MIE: u32   = 1 << 3;
-pub const MSTATUS_SPIE: u32  = 1 << 5;
-pub const MSTATUS_MPIE: u32  = 1 << 7;
-pub const MSTATUS_SPP: u32   = 1 << 8;
+pub const MSTATUS_SIE: u32 = 1 << 1;
+pub const MSTATUS_MIE: u32 = 1 << 3;
+pub const MSTATUS_SPIE: u32 = 1 << 5;
+pub const MSTATUS_MPIE: u32 = 1 << 7;
+pub const MSTATUS_SPP: u32 = 1 << 8;
 pub const MSTATUS_MPP_MASK: u32 = 0x3 << 11;
 pub const MSTATUS_MPP_SHIFT: u32 = 11;
 pub const MSTATUS_FS_MASK: u32 = 0x3 << 13;
-pub const MSTATUS_MPRV: u32  = 1 << 17;
-pub const MSTATUS_SUM: u32   = 1 << 18;
-pub const MSTATUS_MXR: u32   = 1 << 19;
-pub const MSTATUS_TVM: u32   = 1 << 20;
-pub const MSTATUS_TW: u32    = 1 << 21;
-pub const MSTATUS_TSR: u32   = 1 << 22;
+pub const MSTATUS_MPRV: u32 = 1 << 17;
+pub const MSTATUS_SUM: u32 = 1 << 18;
+pub const MSTATUS_MXR: u32 = 1 << 19;
+pub const MSTATUS_TVM: u32 = 1 << 20;
+pub const MSTATUS_TW: u32 = 1 << 21;
+pub const MSTATUS_TSR: u32 = 1 << 22;
 
 // MIP/MIE 位域（中断挂起/使能）
-pub const MIP_SSIP: u32 = 1 << 1;   // S-mode 软件中断
-pub const MIP_MSIP: u32 = 1 << 3;   // M-mode 软件中断
-pub const MIP_STIP: u32 = 1 << 5;   // S-mode 定时器中断
-pub const MIP_MTIP: u32 = 1 << 7;   // M-mode 定时器中断
-pub const MIP_SEIP: u32 = 1 << 9;   // S-mode 外部中断
-pub const MIP_MEIP: u32 = 1 << 11;  // M-mode 外部中断
+pub const MIP_SSIP: u32 = 1 << 1; // S-mode 软件中断
+pub const MIP_MSIP: u32 = 1 << 3; // M-mode 软件中断
+pub const MIP_STIP: u32 = 1 << 5; // S-mode 定时器中断
+pub const MIP_MTIP: u32 = 1 << 7; // M-mode 定时器中断
+pub const MIP_SEIP: u32 = 1 << 9; // S-mode 外部中断
+pub const MIP_MEIP: u32 = 1 << 11; // M-mode 外部中断
 
 // 硬件控制的 MIP 位（CSR 写入时保护）
-const MIP_HW_MASK: u32 = MIP_MTIP | MIP_MSIP | MIP_MEIP;
+const MIP_HW_MASK: u32 = MIP_MTIP | MIP_MSIP | MIP_SEIP | MIP_MEIP;
 
 // 异常原因
-pub const CAUSE_INST_MISALIGNED: u32   = 0;
-pub const CAUSE_ILLEGAL_INST: u32      = 2;
-pub const CAUSE_BREAKPOINT: u32        = 3;
-pub const CAUSE_LOAD_MISALIGNED: u32   = 4;
-pub const CAUSE_STORE_MISALIGNED: u32  = 6;
-pub const CAUSE_ECALL_U: u32           = 8;
-pub const CAUSE_ECALL_S: u32           = 9;
-pub const CAUSE_ECALL_M: u32           = 11;
-pub const CAUSE_INST_PAGE_FAULT: u32   = 12;
-pub const CAUSE_LOAD_PAGE_FAULT: u32   = 13;
-pub const CAUSE_STORE_PAGE_FAULT: u32  = 15;
+pub const CAUSE_INST_MISALIGNED: u32 = 0;
+pub const CAUSE_ILLEGAL_INST: u32 = 2;
+pub const CAUSE_BREAKPOINT: u32 = 3;
+pub const CAUSE_LOAD_MISALIGNED: u32 = 4;
+pub const CAUSE_STORE_MISALIGNED: u32 = 6;
+pub const CAUSE_ECALL_U: u32 = 8;
+pub const CAUSE_ECALL_S: u32 = 9;
+pub const CAUSE_ECALL_M: u32 = 11;
+pub const CAUSE_INST_PAGE_FAULT: u32 = 12;
+pub const CAUSE_LOAD_PAGE_FAULT: u32 = 13;
+pub const CAUSE_STORE_PAGE_FAULT: u32 = 15;
 
 // Sv32 页表项位域
 const PTE_V: u32 = 1 << 0;
@@ -102,16 +104,23 @@ const PTE_A: u32 = 1 << 6;
 const PTE_D: u32 = 1 << 7;
 
 /// 内存访问类型（用于地址翻译）
-pub enum AccessType { Execute, Read, Write }
+pub enum AccessType {
+    Execute,
+    Read,
+    Write,
+}
 
 /// RISC-V Hart（硬件线程）
 pub struct Hart {
     pub regs: [u32; 32],
     pub pc: u32,
     pub csrs: [u32; 4096],
-    pub privilege: u8,           // 当前特权级: 0=U, 1=S, 3=M
-    pub reservation: Option<u32>, // LR/SC 保留地址
-    suppress_instret: bool,      // 写 minstret/minstreth 后抑制本次递增
+    pub privilege: u8,               // 当前特权级: 0=U, 1=S, 3=M
+    pub reservation: Option<u32>,    // LR/SC 保留地址
+    sbi_enabled: bool,               // Linux 启动路径：在 S-mode 直接拦截 SBI ecall
+    shutdown_requested: bool,        // SBI shutdown/system_reset 请求
+    sbi_timer_deadline: Option<u64>, // SBI set_timer 目标时间（用于生成 STIP）
+    suppress_instret: bool,          // 写 minstret/minstreth 后抑制本次递增
     #[cfg(feature = "cached-decode")]
     decode_cache: DecodeCache,
 }
@@ -124,15 +133,20 @@ impl Hart {
             csrs: [0; 4096],
             privilege: 3, // 复位为 M-mode
             reservation: None,
+            sbi_enabled: false,
+            shutdown_requested: false,
+            sbi_timer_deadline: None,
             suppress_instret: false,
             #[cfg(feature = "cached-decode")]
             decode_cache: DecodeCache::new(),
         };
-        // misa: RV32IMA (bits: I=8, M=12, A=0)
+        // misa: RV32IMA + S + U
         hart.csrs[MISA as usize] = (1 << 30)  // MXL=1 (32-bit)
             | (1 << 8)   // I
             | (1 << 12)  // M
-            | (1 << 0);  // A
+            | (1 << 18)  // S
+            | (1 << 20)  // U
+            | (1 << 0); // A
         hart
     }
 
@@ -152,6 +166,132 @@ impl Hart {
         self.decode_cache.flush();
     }
 
+    /// 启用/禁用内嵌 SBI（M6 Linux 启动路径）
+    pub fn enable_sbi(&mut self, enabled: bool) {
+        self.sbi_enabled = enabled;
+    }
+
+    /// 是否收到 SBI shutdown/system_reset 请求
+    pub fn shutdown_requested(&self) -> bool {
+        self.shutdown_requested
+    }
+
+    fn sbi_set_timer(&mut self, bus: &mut Bus, deadline: u64) {
+        self.sbi_timer_deadline = Some(deadline);
+        bus.clint.mtimecmp = deadline;
+        // set_timer 表示“重新编程下一次中断”，先清掉 STIP，后续由 update_mip 重新置位
+        self.csrs[MIP as usize] &= !MIP_STIP;
+    }
+
+    fn sbi_set_result(&mut self, error: i32, value: u32) {
+        self.write_reg(10, error as u32); // a0 = error
+        self.write_reg(11, value); // a1 = value
+    }
+
+    fn sbi_probe_extension(ext: u32) -> u32 {
+        match ext {
+            0x10 /* BASE */
+            | 0x4442_434E /* DBCN */
+            | 0x5449_4D45 /* TIME */
+            | 0x5352_5354 /* SRST */ => 1,
+            _ => 0,
+        }
+    }
+
+    /// 在 S-mode 拦截并处理 SBI ecall。
+    /// 返回 true 表示该 ecall 已由内嵌 SBI 消化，不需要再走 trap 机制。
+    pub fn handle_sbi_ecall(&mut self, bus: &mut Bus) -> bool {
+        if !self.sbi_enabled || self.privilege != 1 {
+            return false;
+        }
+
+        const SBI_SUCCESS: i32 = 0;
+        const SBI_ERR_NOT_SUPPORTED: i32 = -2;
+
+        let eid = self.read_reg(17); // a7
+        let fid = self.read_reg(16); // a6
+        let a0 = self.read_reg(10);
+        let a1 = self.read_reg(11);
+        let a2 = self.read_reg(12);
+
+        match eid {
+            // SBI v0.1 legacy set_timer(stime_value)
+            0x00 => {
+                let deadline = ((a1 as u64) << 32) | (a0 as u64);
+                self.sbi_set_timer(bus, deadline);
+                self.write_reg(10, 0);
+            }
+            // SBI v0.1 legacy console_putchar(ch)
+            0x01 => {
+                bus.write8(0x1000_0000, a0 as u8);
+                self.write_reg(10, 0);
+            }
+            // SBI v0.1 legacy console_getchar()
+            0x02 => {
+                self.write_reg(10, u32::MAX); // -1: no input
+            }
+            // SBI v0.1 legacy shutdown()
+            0x08 => {
+                self.shutdown_requested = true;
+                self.write_reg(10, 0);
+            }
+            // SBI Base extension
+            0x10 => match fid {
+                0 => self.sbi_set_result(SBI_SUCCESS, 0x0000_0002), // spec version 0.2
+                1 => self.sbi_set_result(SBI_SUCCESS, 0x5245_4D55), // impl id: "REMU"
+                2 => self.sbi_set_result(SBI_SUCCESS, 0x0000_0001), // impl version
+                3 => self.sbi_set_result(SBI_SUCCESS, Self::sbi_probe_extension(a0)),
+                4 => self.sbi_set_result(SBI_SUCCESS, self.read_csr(0xF11)), // mvendorid
+                5 => self.sbi_set_result(SBI_SUCCESS, self.read_csr(0xF12)), // marchid
+                6 => self.sbi_set_result(SBI_SUCCESS, self.read_csr(0xF13)), // mimpid
+                _ => self.sbi_set_result(SBI_ERR_NOT_SUPPORTED, 0),
+            },
+            // SBI Debug Console extension
+            0x4442_434E => match fid {
+                // console_write(num_bytes, base_addr_lo, base_addr_hi)
+                0 => {
+                    if a2 != 0 {
+                        self.sbi_set_result(SBI_ERR_NOT_SUPPORTED, 0);
+                    } else {
+                        for i in 0..a0 {
+                            let ch = bus.read8(a1.wrapping_add(i));
+                            bus.write8(0x1000_0000, ch);
+                        }
+                        self.sbi_set_result(SBI_SUCCESS, a0);
+                    }
+                }
+                // console_write_byte(byte)
+                2 => {
+                    bus.write8(0x1000_0000, a0 as u8);
+                    self.sbi_set_result(SBI_SUCCESS, 0);
+                }
+                _ => self.sbi_set_result(SBI_ERR_NOT_SUPPORTED, 0),
+            },
+            // SBI TIME extension: set_timer(stime_value)
+            0x5449_4D45 => {
+                if fid == 0 {
+                    let deadline = ((a1 as u64) << 32) | (a0 as u64);
+                    self.sbi_set_timer(bus, deadline);
+                    self.sbi_set_result(SBI_SUCCESS, 0);
+                } else {
+                    self.sbi_set_result(SBI_ERR_NOT_SUPPORTED, 0);
+                }
+            }
+            // SBI SRST extension: system_reset(reset_type, reset_reason)
+            0x5352_5354 => {
+                if fid == 0 {
+                    self.shutdown_requested = true;
+                    self.sbi_set_result(SBI_SUCCESS, 0);
+                } else {
+                    self.sbi_set_result(SBI_ERR_NOT_SUPPORTED, 0);
+                }
+            }
+            _ => self.sbi_set_result(SBI_ERR_NOT_SUPPORTED, 0),
+        }
+
+        true
+    }
+
     /// 读 CSR（处理 S-mode 别名）
     pub fn read_csr(&self, addr: u16) -> u32 {
         match addr {
@@ -159,9 +299,11 @@ impl Hart {
             SIE => self.csrs[MIE as usize] & SIE_MASK,
             SIP => self.csrs[MIP as usize] & SIE_MASK,
             // 只读影子计数器 → 读对应的 M-mode 计数器
-            CYCLE    => self.csrs[MCYCLE as usize],
-            INSTRET  => self.csrs[MINSTRET as usize],
-            CYCLEH   => self.csrs[MCYCLEH as usize],
+            CYCLE => self.csrs[MCYCLE as usize],
+            TIME => self.csrs[TIME as usize],
+            INSTRET => self.csrs[MINSTRET as usize],
+            CYCLEH => self.csrs[MCYCLEH as usize],
+            TIMEH => self.csrs[TIMEH as usize],
             INSTRETH => self.csrs[MINSTRETH as usize],
             // Debug trigger：tselect 固定为 0（仅 trigger 0），tdata1 固定为 0（不支持任何触发类型）
             0x7A0 => 0, // tselect
@@ -174,7 +316,9 @@ impl Hart {
     pub fn write_csr(&mut self, addr: u16, val: u32) {
         match addr {
             MHARTID | MISA => {} // 只读
-            MTVEC | STVEC => { self.csrs[addr as usize] = val & !0x3; } // 只支持 Direct 模式
+            MTVEC | STVEC => {
+                self.csrs[addr as usize] = val & !0x3;
+            } // 只支持 Direct 模式
             SSTATUS => {
                 let mstatus = self.csrs[MSTATUS as usize];
                 self.csrs[MSTATUS as usize] = (mstatus & !SSTATUS_MASK) | (val & SSTATUS_MASK);
@@ -203,7 +347,9 @@ impl Hart {
                 #[cfg(feature = "cached-decode")]
                 self.decode_cache.flush();
             }
-            _ => { self.csrs[addr as usize] = val; }
+            _ => {
+                self.csrs[addr as usize] = val;
+            }
         }
     }
 
@@ -279,7 +425,11 @@ impl Hart {
     pub fn sret(&mut self) {
         let mstatus = self.read_csr(MSTATUS);
         // 恢复特权级 ← SPP (1 bit: 0=U, 1=S)
-        let spp = if (mstatus & MSTATUS_SPP) != 0 { 1u8 } else { 0u8 };
+        let spp = if (mstatus & MSTATUS_SPP) != 0 {
+            1u8
+        } else {
+            0u8
+        };
         self.privilege = spp;
         // 恢复 SIE ← SPIE, SPIE ← 1, SPP ← U(0)
         let spie = (mstatus & MSTATUS_SPIE) != 0;
@@ -345,8 +495,8 @@ impl Hart {
 
         let fault_cause = match access {
             AccessType::Execute => CAUSE_INST_PAGE_FAULT,
-            AccessType::Read    => CAUSE_LOAD_PAGE_FAULT,
-            AccessType::Write   => CAUSE_STORE_PAGE_FAULT,
+            AccessType::Read => CAUSE_LOAD_PAGE_FAULT,
+            AccessType::Write => CAUSE_STORE_PAGE_FAULT,
         };
 
         // Sv32 两级页表遍历
@@ -383,7 +533,9 @@ impl Hart {
         // 权限检查
         match access {
             AccessType::Execute => {
-                if (pte & PTE_X) == 0 { return Err((fault_cause, va)); }
+                if (pte & PTE_X) == 0 {
+                    return Err((fault_cause, va));
+                }
             }
             AccessType::Read => {
                 let mxr = (mstatus & MSTATUS_MXR) != 0;
@@ -392,7 +544,9 @@ impl Hart {
                 }
             }
             AccessType::Write => {
-                if (pte & PTE_W) == 0 { return Err((fault_cause, va)); }
+                if (pte & PTE_W) == 0 {
+                    return Err((fault_cause, va));
+                }
             }
         }
 
@@ -447,11 +601,25 @@ impl Hart {
         } else {
             mip &= !MIP_MSIP;
         }
-        // MEIP: 由 PLIC 外部中断控制
-        if bus.plic.has_pending_interrupt() {
+        // MEIP: context0 (M-mode external interrupt)
+        if bus.plic.has_pending_m_interrupt() {
             mip |= MIP_MEIP;
         } else {
             mip &= !MIP_MEIP;
+        }
+        // SEIP: context1 (S-mode external interrupt)
+        if bus.plic.has_pending_s_interrupt() {
+            mip |= MIP_SEIP;
+        } else {
+            mip &= !MIP_SEIP;
+        }
+        // STIP: 由内嵌 SBI set_timer 逻辑驱动
+        if let Some(deadline) = self.sbi_timer_deadline {
+            if bus.clint.mtime >= deadline {
+                mip |= MIP_STIP;
+            } else {
+                mip &= !MIP_STIP;
+            }
         }
         self.csrs[MIP as usize] = mip;
     }
@@ -481,7 +649,7 @@ impl Hart {
         };
 
         let can_take = (pending & !mideleg & if m_ie { u32::MAX } else { 0 })
-                     | (pending & mideleg & if s_ie { u32::MAX } else { 0 });
+            | (pending & mideleg & if s_ie { u32::MAX } else { 0 });
         if can_take == 0 {
             return None;
         }
@@ -499,6 +667,9 @@ impl Hart {
     pub fn step(&mut self, bus: &mut Bus) {
         // 推进 CLINT 时钟 & 同步硬件中断位
         bus.clint.tick();
+        self.csrs[TIME as usize] = bus.clint.mtime as u32;
+        self.csrs[TIMEH as usize] = (bus.clint.mtime >> 32) as u32;
+        bus.poll_host_io();
         self.update_mip(bus);
 
         // 检查待处理中断
