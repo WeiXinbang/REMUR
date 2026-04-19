@@ -8,9 +8,10 @@
 |--------|------|------|
 | M1: RV32I 解释器 | ✅ 完成 | 47 条基础指令 + Zicsr + trap/mret |
 | M2: 扩展指令集   | ✅ 完成 | RV32M 乘除法 + RV32A 原子操作 |
-| M3: 特权架构     | 🔲 待开始 | M/S/U 模式 + Sv32 页表 |
-| M4: SoC 外设     | 🔲 待开始 | CLINT + PLIC + UART |
-| M5: 启动 Linux   | 🔲 待开始 | SBI + DTB + 内核加载 |
+| M3: 特权架构     | ✅ 完成 | M/S/U 模式 + 异常委托 + Sv32 页表 |
+| M4: 性能优化     | ✅ 完成 | criterion + 译码缓存 + u8 寄存器索引 |
+| M5: SoC 外设     | ✅ 完成 | CLINT + PLIC + UART + ELF 加载器 + arch-test 适配 |
+| M6: 启动 Linux   | ✅ 完成 | 内嵌 SBI + DTB(可生成) + 内核/initramfs 加载 |
 
 ## 测试结果
 
@@ -18,8 +19,11 @@
 rv32ui-p (RV32I):  37/37 ✅
 rv32um-p (RV32M):   8/8  ✅
 rv32ua-p (RV32A):  10/10 ✅
+rv32mi-p (M-mode): 16/16 ✅
+rv32si-p (S-mode):  6/6  ✅
+peripherals:        7/7  ✅
 ─────────────────────────
-总计:              55/55 ✅
+总计:              84/84 ✅
 ```
 
 ## 快速开始
@@ -32,21 +36,79 @@ cargo build --release
 cargo run -- sum.bin
 
 # 运行 riscv-tests（需先编译测试二进制）
-cargo run -- tests/bins/rv32ui-p-add.bin 80000000 80001000
+cargo run -- tests/bins/rv32ui-p-add.bin --tohost 80001000
 
 # 运行全部集成测试
 cargo test
+
+# M6: Linux 启动（内嵌 SBI）
+cargo run -- --linux --kernel path/to/Image --cycles 50000000
+
+# 等价简写（新增）
+cargo run linux --kernel path/to/Image --cycles 50000000
+
+# Cargo alias（新增）
+cargo linux --kernel path/to/Image --cycles 50000000
+
+# 零配置模式（自动下载预构建 Linux Image + rootfs 后启动）
+cargo run linux
+
+# 推荐：显示早期串口日志（并使用 4MiB 对齐内核地址）
+cargo run linux --kernel-addr 0x80400000 --bootargs "earlycon=uart8250,mmio,0x10000000 console=ttyS0"
+
+# 验证 userspace ls 已可执行（ls 作为 init 运行后会退出并触发 panic，属于预期）
+cargo run linux --kernel-addr 0x80400000 --bootargs "earlycon=uart8250,mmio,0x10000000 console=ttyS0 rdinit=/bin/ls"
 ```
 
 ### CLI 参数
 
-```
-remur <binary_file> [base_addr_hex] [tohost_addr_hex]
+```text
+普通模式:
+  remur <binary_or_elf> [--tohost <hex>] [--signature <file>] [--cycles <n>]
+
+Linux 模式:
+  remur linux [--kernel <image_or_elf>] [--dtb <file>] [--initramfs <file>]
+        [--kernel-addr <hex>] [--dtb-addr <hex>] [--initramfs-addr <hex>]
+        [--bootargs <string>] [--cycles <n>]
+
+Linux 模式（兼容）:
+  remur --linux --kernel <image_or_elf> [--dtb <file>] [--initramfs <file>]
+        [--kernel-addr <hex>] [--dtb-addr <hex>] [--initramfs-addr <hex>]
+        [--bootargs <string>] [--cycles <n>]
 ```
 
-- `binary_file`: flat binary 文件路径
-- `base_addr_hex`: 加载基址（默认 0x80000000）
-- `tohost_addr_hex`: riscv-tests 的 tohost 地址（用于 PASS/FAIL 检测）
+也可以用脚本：
+
+```powershell
+.\scripts\run_linux.ps1
+# 或指定自备内核
+.\scripts\run_linux.ps1 -Kernel path\to\Image
+```
+
+### 测试命令说明
+
+```bash
+# 默认：集成测试（riscv-tests + 外设 + Linux 启动烟雾）
+cargo test
+
+# 若 tests/bins 缺失，会自动拉源码并编译 riscv-tests
+
+# 运行 riscv-arch-test 官方框架（耗时长，默认不随 cargo test 执行）
+cargo arch-test
+```
+
+### M5 架构测试怎么用（riscv-arch-test）
+
+- `cargo test`：默认只跑仓库内快速/常规测试，不包含 arch framework。
+- `cargo arch-test`：运行 `tests/arch_framework.rs`（`#[ignore]`）触发官方框架流程。
+- 环境要求：Linux/WSL + `riscv64-unknown-elf-*` 交叉工具链 + Python 依赖（由 `scripts/run-arch-test.sh` 使用）。
+- 结论：配置已接好，命令入口也已接好；是否能完整跑完取决于本机 Linux/WSL 工具链环境。
+
+### M6 Linux 启动现状（含 ls 说明）
+
+- `cargo run linux`（零配置）会自动下载并缓存预构建 `Image/rootfs`，默认用 4MiB 对齐地址启动（`0x80400000`）。
+- 默认 bootargs 会进入 `rdinit=/bin/sh`，可直接在串口里输入 `ls`。
+- 当前可看到 BusyBox shell 提示符并执行命令（会提示 `can't access tty; job control turned off`，但不影响 `ls`/`echo` 等基本交互）。
 
 ## 项目结构
 

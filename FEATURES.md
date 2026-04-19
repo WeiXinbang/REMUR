@@ -253,8 +253,8 @@
 ### 3.4 UART（极简版 16550）
 - [x] THR（发送保持寄存器）→ 写入时 print! 到终端
 - [x] LSR（线路状态寄存器）→ 始终返回 0x60（发送空+发送完成）
-- [ ] RBR（接收缓冲寄存器）→ 读取终端输入
-- [ ] IER（中断使能）→ 接收中断触发
+- [x] RBR（接收缓冲寄存器）→ 读取终端输入
+- [x] IER（中断使能）→ 接收中断触发（通过 PLIC IRQ#10）
 
 ### 3.5 ELF 加载器
 - [x] goblin 0.9 解析 ELF 文件（PT_LOAD 段加载）
@@ -275,12 +275,12 @@
 ## 四、启动流程
 
 ### 4.1 内嵌最小 SBI
-- [ ] SBI v0.2+ 基本规范
-- [ ] sbi_set_timer（设置 S-mode 定时器）
-- [ ] sbi_console_putchar（串口输出）
-- [ ] sbi_console_getchar（串口输入）
-- [ ] sbi_shutdown（关机）
-- [ ] Timer Extension (EID 0x54494D45)
+- [x] SBI v0.2+ 基本规范（BASE/TIME/SRST + legacy 兼容）
+- [x] sbi_set_timer（设置 S-mode 定时器）
+- [x] sbi_console_putchar（串口输出）
+- [x] sbi_console_getchar（串口输入，当前无输入返回 -1）
+- [x] sbi_shutdown（关机）
+- [x] Timer Extension (EID 0x54494D45)
 - [ ] IPI Extension (EID 0x735049)（预留）
 
 ### 4.2 OpenSBI 加载（可选路径）
@@ -288,11 +288,11 @@
 - [ ] 正确实现 M-mode 使其能运行 OpenSBI
 
 ### 4.3 Linux 启动
-- [ ] 加载 Linux Image 到 RAM 指定偏移
-- [ ] 加载/生成 DTB（FDT）
-- [ ] 加载 initramfs 到 RAM
-- [ ] 设置 a0 = hartid, a1 = DTB 物理地址
-- [ ] 跳转到内核入口
+- [x] 加载 Linux Image/ELF 到 RAM 指定偏移
+- [x] 加载/生成 DTB（FDT）
+- [x] 加载 initramfs 到 RAM
+- [x] 设置 a0 = hartid, a1 = DTB 物理地址
+- [x] 切到 S-mode 并跳转到内核入口
 
 ---
 

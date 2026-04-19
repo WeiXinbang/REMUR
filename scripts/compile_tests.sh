@@ -68,5 +68,15 @@ compile_suite rv32ua rv32ima_zicsr \
     amoadd_w amoand_w amomax_w amomaxu_w \
     amomin_w amominu_w amoor_w amoswap_w amoxor_w lrsc
 
+# RV32MI (Machine-mode privileged tests)
+compile_suite rv32mi rv32ima_zicsr \
+    breakpoint csr illegal instret_overflow \
+    lh-misaligned lw-misaligned ma_addr ma_fetch mcsr pmpaddr \
+    sbreak scall sh-misaligned shamt sw-misaligned zicntr
+
+# RV32SI (Supervisor-mode privileged tests)
+compile_suite rv32si rv32ima_zicsr \
+    csr dirty ma_fetch sbreak scall wfi
+
 echo "Compiled $PASS tests ($FAIL failures)"
 [ $FAIL -eq 0 ] || exit 1
