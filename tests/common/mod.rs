@@ -2,15 +2,43 @@ use remur::bus::{Bus, RAM_BASE};
 use remur::cpu::Hart;
 use remur::loader;
 use remur::memory::Memory;
+use std::sync::OnceLock;
 
 const TOHOST: u32 = 0x8000_1000;
 const MEM_SIZE: usize = 128 * 1024 * 1024;
 const MAX_CYCLES: u64 = 10_000_000;
+static ENSURE_TEST_BINS: OnceLock<()> = OnceLock::new();
+
+fn ensure_test_binaries() {
+    ENSURE_TEST_BINS.get_or_init(|| {
+        let status = if cfg!(windows) {
+            std::process::Command::new("powershell")
+                .args([
+                    "-NoProfile",
+                    "-ExecutionPolicy",
+                    "Bypass",
+                    "-File",
+                    "scripts\\setup_tests.ps1",
+                ])
+                .status()
+                .expect("failed to execute scripts\\setup_tests.ps1")
+        } else {
+            std::process::Command::new("bash")
+                .args(["scripts/compile_tests.sh"])
+                .status()
+                .expect("failed to execute scripts/compile_tests.sh")
+        };
+        assert!(status.success(), "failed to build riscv-tests binaries");
+    });
+}
 
 pub fn run_test(bin_name: &str) {
     // 优先尝试 ELF，不存在则回退到 raw .bin
     let elf_path = format!("tests/bins/{}.elf", bin_name);
     let bin_path = format!("tests/bins/{}.bin", bin_name);
+    if !std::path::Path::new(&elf_path).exists() && !std::path::Path::new(&bin_path).exists() {
+        ensure_test_binaries();
+    }
 
     let mem = Memory::new(MEM_SIZE);
     let mut bus = Bus::new(mem);

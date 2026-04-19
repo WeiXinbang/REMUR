@@ -4,6 +4,7 @@ pub mod cache;
 pub mod clint;
 pub mod cpu;
 pub mod decode;
+pub mod dtb;
 pub mod execute;
 pub mod instruction;
 pub mod loader;
