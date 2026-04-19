@@ -1,0 +1,4 @@
+[alias]
+linux = "run -- linux"
+linux-release = "run --release -- linux"
+arch-test = "test --test arch_framework -- --ignored --nocapture"

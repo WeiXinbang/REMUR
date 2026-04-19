@@ -40,7 +40,8 @@ pub fn load_elf(data: &[u8], bus: &mut Bus) -> ElfInfo {
     }
 
     let find_sym = |name: &str| -> Option<u32> {
-        elf.syms.iter()
+        elf.syms
+            .iter()
             .find(|sym| elf.strtab.get_at(sym.st_name).map_or(false, |n| n == name))
             .map(|sym| sym.st_value as u32)
     };
