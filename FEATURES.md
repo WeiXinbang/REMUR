@@ -315,10 +315,12 @@
 - [x] `config/remur/remur-rv32ima/` — arch-test 框架配置（YAML + 宏 + 链接脚本）
 
 ### 5.2 调试工具
-- [ ] itrace：指令反汇编追踪（可开关）
+- [x] itrace：指令级事件追踪（`--itrace`/`--itrace-file`/`--itrace-limit`）
 - [ ] mtrace：关键地址内存访问记录
 - [ ] regtrace：寄存器变化追踪
-- [ ] difftest：与 Spike 参考模型逐指令对比（可选）
+- [x] difftest：参考 trace 对拍（`--difftest-ref`）
+- [x] difftest 外部接线：`--difftest-ref-cmd` + `--difftest-ref-out`
+- [x] Spike 样例转换链路：`scripts/gen_spike_ref.sh` + `scripts/spike_to_remur_trace.py`
 - [ ] GDB remote stub（可选）
 
 ---

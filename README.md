@@ -68,12 +68,14 @@ cargo run linux --kernel-addr 0x80400000 --bootargs "earlycon=uart8250,mmio,0x10
 普通模式:
   remur <binary_or_elf> [--tohost <hex>] [--signature <file>] [--cycles <n>]
         [--itrace] [--itrace-file <file>] [--itrace-limit <n>] [--difftest-ref <file>]
+        [--difftest-ref-cmd <cmd>] [--difftest-ref-out <file>]
 
 Linux 模式:
   remur linux [--kernel <image_or_elf>] [--dtb <file>] [--initramfs <file>]
         [--kernel-addr <hex>] [--dtb-addr <hex>] [--initramfs-addr <hex>]
         [--bootargs <string>] [--cycles <n>]
         [--itrace] [--itrace-file <file>] [--itrace-limit <n>] [--difftest-ref <file>]
+        [--difftest-ref-cmd <cmd>] [--difftest-ref-out <file>]
 
 Linux 模式（兼容）:
   remur --linux --kernel <image_or_elf> [--dtb <file>] [--initramfs <file>]
@@ -117,7 +119,7 @@ cargo arch-test
 ### M7 / M8 是否现在开做
 
 - **M7.1 已落地**：`--itrace`/`--itrace-file`/`--itrace-limit` 可输出指令级 trace；`--difftest-ref` 可按事件逐步对拍参考 trace。
-- **M7.2 下一步**：把参考 trace 生成流程接到外部参考模型（如 Spike）启动片段。
+- **M7.2 已接线（最小版）**：支持 `--difftest-ref-cmd` 在运行前自动生成参考 trace，再交给 `--difftest-ref` 对拍。
 - **建议暂缓 M8**：当前瓶颈还不是解释器吞吐，过早上基本块缓存/JIT 会放大调试成本；等 M7 稳定后再做优化更稳妥。
 - **进入 M8 的门槛**：M7 工具可稳定复现问题、Linux 启动回归可自动化、再开始做性能 A/B（如 `cargo bench` 基线对比）。
 
@@ -132,6 +134,9 @@ cargo run -- tests/bins/rv32ui-p-add.elf --itrace --itrace-file target\trace\add
 
 # 再用同一 workload 做 difftest 对拍
 cargo run -- tests/bins/rv32ui-p-add.elf --difftest-ref target\trace\add.ref
+
+# 一步完成：先调用外部命令生成参考 trace，再自动对拍（Linux/WSL）
+cargo run -- tests/bins/rv32ui-p-add.elf --difftest-ref-cmd "bash scripts/gen_spike_ref.sh tests/bins/rv32ui-p-add.elf" --difftest-ref-out target/trace/add.spike.ref
 ```
 
 ## 项目结构

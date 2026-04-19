@@ -520,7 +520,8 @@ cargo run linux --kernel-addr 0x80400000 --bootargs "earlycon=uart8250,mmio,0x10
 - ✅ 已支持 `--itrace`（指令级事件 trace）
 - ✅ 已支持 `--itrace-file` / `--itrace-limit`（可落盘 + 输出限流）
 - ✅ 已支持 `--difftest-ref`（按事件逐步与参考 trace 对拍）
-- 🚧 M7.2 继续：接入外部参考模型 trace 生成链路（Linux 启动关键片段）
+- ✅ M7.2 最小接线：支持 `--difftest-ref-cmd` 运行前调用外部命令生成参考 trace
+- 🚧 M7.2 后续：补齐 Linux 启动关键片段与外部模型 trace 对齐细节
 
 ### 建议拆分
 
@@ -531,6 +532,7 @@ cargo run linux --kernel-addr 0x80400000 --bootargs "earlycon=uart8250,mmio,0x10
 2. **M7.2：Linux 启动路径 difftest（进行中）**
    - 先对齐 M→S 切换、异常返回、外部中断入口
    - 优先覆盖“可稳定复现”的启动片段，不追求首轮全量覆盖
+   - 已支持 `--difftest-ref-cmd` + `--difftest-ref-out` 自动生成并消费参考 trace
 
 ### itrace
 ```rust
@@ -542,7 +544,8 @@ if ITRACE_ENABLED {
 ### difftest（当前最小实现）
 - 参考文件格式：`I/T` 事件流（含 PC、inst、next_pc、特权级、trap 信息）
 - 运行时使用 `--difftest-ref <file>` 逐条比对，不一致立即报错并停止
-- 后续可把 Spike/QEMU trace 适配到该格式，实现跨模型自动回归
+- 支持 `--difftest-ref-cmd <cmd>` 在运行前调用外部命令生成参考 trace（输出路径通过 `REMUR_DIFFTEST_REF_OUT` 传入）
+- 提供 `scripts/gen_spike_ref.sh` + `scripts/spike_to_remur_trace.py` 作为 Spike 最小接线样例
 
 ### TUI 是否现在要上
 - **建议暂不上**：当前优先级是“可自动回归、可脚本化排障”；CLI trace + difftest 更利于 CI 和批处理。

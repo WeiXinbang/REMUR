@@ -65,11 +65,13 @@ struct DebugOptions {
     itrace_file: Option<String>,
     itrace_limit: Option<u64>,
     difftest_ref: Option<String>,
+    difftest_ref_cmd: Option<String>,
+    difftest_ref_out: Option<String>,
 }
 
 impl DebugOptions {
     fn needs_step_snapshots(&self) -> bool {
-        self.itrace || self.difftest_ref.is_some()
+        self.itrace || self.difftest_ref.is_some() || self.difftest_ref_cmd.is_some()
     }
 }
 
@@ -92,6 +94,8 @@ fn usage_and_exit() -> ! {
     eprintln!("  --itrace-file <path>         将 trace 写入文件（默认 stderr）");
     eprintln!("  --itrace-limit <n>           最多输出 n 条 trace");
     eprintln!("  --difftest-ref <path>        与参考 trace 逐步对比（M7 最小 difftest）");
+    eprintln!("  --difftest-ref-cmd <cmd>     先运行外部命令生成参考 trace（M7.2）");
+    eprintln!("  --difftest-ref-out <path>    外部命令输出参考 trace 路径（默认 target\\trace\\difftest.ref）");
     eprintln!();
     eprintln!("Normal mode options:");
     eprintln!("  --tohost <hex_addr>          tohost 地址（raw .bin 用），ELF 自动解析");
@@ -190,6 +194,12 @@ fn parse_mode(args: &[String]) -> Mode {
                 "--difftest-ref" => {
                     debug.difftest_ref = Some(take_next(args, &mut i, "--difftest-ref"))
                 }
+                "--difftest-ref-cmd" => {
+                    debug.difftest_ref_cmd = Some(take_next(args, &mut i, "--difftest-ref-cmd"))
+                }
+                "--difftest-ref-out" => {
+                    debug.difftest_ref_out = Some(take_next(args, &mut i, "--difftest-ref-out"))
+                }
                 other if other.starts_with("--") => {
                     panic!("Unknown option in linux mode: {}", other)
                 }
@@ -250,6 +260,12 @@ fn parse_mode(args: &[String]) -> Mode {
                 "--difftest-ref" => {
                     debug.difftest_ref = Some(take_next(args, &mut i, "--difftest-ref"))
                 }
+                "--difftest-ref-cmd" => {
+                    debug.difftest_ref_cmd = Some(take_next(args, &mut i, "--difftest-ref-cmd"))
+                }
+                "--difftest-ref-out" => {
+                    debug.difftest_ref_out = Some(take_next(args, &mut i, "--difftest-ref-out"))
+                }
                 "--linux" => panic!("Use --linux with --kernel for Linux boot mode"),
                 other if other.starts_with("--") => panic!("Unknown option: {}", other),
                 other => {
@@ -275,6 +291,102 @@ fn parse_mode(args: &[String]) -> Mode {
             debug,
         })
     }
+}
+
+struct DifftestContext<'a> {
+    mode: &'a str,
+    workload: &'a str,
+    kernel: Option<&'a str>,
+    bootargs: Option<&'a str>,
+}
+
+fn default_difftest_ref_out() -> String {
+    PathBuf::from("target")
+        .join("trace")
+        .join("difftest.ref")
+        .to_string_lossy()
+        .into_owned()
+}
+
+fn run_difftest_ref_command(command: &str, out_path: &str, ctx: &DifftestContext<'_>) -> Result<(), String> {
+    if let Some(parent) = Path::new(out_path).parent()
+        && !parent.as_os_str().is_empty()
+    {
+        fs::create_dir_all(parent).map_err(|e| {
+            format!(
+                "cannot create difftest output directory '{}': {}",
+                parent.display(),
+                e
+            )
+        })?;
+    }
+
+    let mut cmd = if cfg!(windows) {
+        let mut c = Command::new("powershell");
+        c.args([
+            "-NoProfile",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-Command",
+            command,
+        ]);
+        c
+    } else {
+        let mut c = Command::new("bash");
+        c.args(["-lc", command]);
+        c
+    };
+
+    cmd.env("REMUR_DIFFTEST_REF_OUT", out_path)
+        .env("REMUR_DIFFTEST_MODE", ctx.mode)
+        .env("REMUR_DIFFTEST_WORKLOAD", ctx.workload);
+    if let Some(kernel) = ctx.kernel {
+        cmd.env("REMUR_DIFFTEST_KERNEL", kernel);
+    }
+    if let Some(bootargs) = ctx.bootargs {
+        cmd.env("REMUR_DIFFTEST_BOOTARGS", bootargs);
+    }
+
+    let status = cmd
+        .status()
+        .map_err(|e| format!("failed to start difftest-ref command: {}", e))?;
+    if !status.success() {
+        return Err(format!(
+            "difftest-ref command failed with status {}",
+            status
+        ));
+    }
+    if !Path::new(out_path).is_file() {
+        return Err(format!(
+            "difftest-ref command succeeded but output file '{}' not found",
+            out_path
+        ));
+    }
+    Ok(())
+}
+
+fn prepare_difftest_ref(debug: &mut DebugOptions, ctx: &DifftestContext<'_>) -> Result<(), String> {
+    if debug.difftest_ref_cmd.is_none() {
+        if debug.difftest_ref_out.is_some() {
+            return Err("--difftest-ref-out requires --difftest-ref-cmd".to_string());
+        }
+        return Ok(());
+    }
+
+    let out_path = debug
+        .difftest_ref_out
+        .clone()
+        .or_else(|| debug.difftest_ref.clone())
+        .unwrap_or_else(default_difftest_ref_out);
+
+    let cmd = debug
+        .difftest_ref_cmd
+        .as_ref()
+        .expect("checked above")
+        .to_string();
+    run_difftest_ref_command(&cmd, &out_path, ctx)?;
+    debug.difftest_ref = Some(out_path);
+    Ok(())
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -602,8 +714,22 @@ fn run_normal_mode(opts: NormalOptions) {
     bus.tohost_addr = tohost;
     let mut hart = cpu::Hart::new();
     hart.pc = entry;
-    let mut debug_runtime = if opts.debug.needs_step_snapshots() {
-        Some(DebugRuntime::new(opts.debug.clone()).unwrap_or_else(|e| panic!("{e}")))
+
+    let mut debug_opts = opts.debug.clone();
+    if let Err(e) = prepare_difftest_ref(
+        &mut debug_opts,
+        &DifftestContext {
+            mode: "normal",
+            workload: &opts.input_file,
+            kernel: None,
+            bootargs: None,
+        },
+    ) {
+        panic!("{e}");
+    }
+
+    let mut debug_runtime = if debug_opts.needs_step_snapshots() {
+        Some(DebugRuntime::new(debug_opts).unwrap_or_else(|e| panic!("{e}")))
     } else {
         None
     };
@@ -850,7 +976,7 @@ fn run_linux_mode(opts: LinuxOptions) {
         mut initramfs_addr,
         mut bootargs,
         max_cycles,
-        debug,
+        mut debug,
     } = opts;
 
     let mem = memory::Memory::new(MEM_SIZE);
@@ -946,6 +1072,18 @@ fn run_linux_mode(opts: LinuxOptions) {
             .map(|(s, _)| format!("0x{:08x}", s))
             .unwrap_or_else(|| "none".to_string())
     );
+
+    if let Err(e) = prepare_difftest_ref(
+        &mut debug,
+        &DifftestContext {
+            mode: "linux",
+            workload: &kernel_path,
+            kernel: Some(&kernel_path),
+            bootargs: Some(&bootargs),
+        },
+    ) {
+        panic!("{e}");
+    }
 
     let mut debug_runtime = if debug.needs_step_snapshots() {
         Some(DebugRuntime::new(debug).unwrap_or_else(|e| panic!("{e}")))
