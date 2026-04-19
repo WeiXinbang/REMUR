@@ -5,6 +5,7 @@ use crate::bus::Bus;
 use crate::cache::DecodeCache;
 use crate::decode;
 use crate::execute;
+use crate::instruction::Instruction;
 
 // CSR 地址常量
 pub const MSTATUS: u16 = 0x300;
@@ -110,6 +111,46 @@ pub enum AccessType {
     Write,
 }
 
+#[derive(Debug, Clone, Copy)]
+/// Trap 发生时的关键状态快照（用于 itrace/difftest 输出）。
+pub struct TrapSnapshot {
+    /// mcause/scause 原始值（含中断标志位）。
+    pub cause: u32,
+    /// mtval/stval 值。
+    pub tval: u32,
+    /// trap 前特权级（0=U,1=S,3=M）。
+    pub from_privilege: u8,
+    /// trap 后特权级。
+    pub to_privilege: u8,
+    /// 是否走了 MIDELEG/MEDELEG 委托到 S 态。
+    pub delegated_to_s: bool,
+    /// trap 后 PC（mtvec/stvec 生效后的入口）。
+    pub trap_vector: u32,
+}
+
+#[derive(Debug, Clone, Copy)]
+/// 单步执行摘要：用于 CLI trace 与最小 difftest 对拍。
+pub struct StepSnapshot {
+    /// 本步开始时 PC。
+    pub pc: u32,
+    /// 本步开始时特权级。
+    pub privilege_before: u8,
+    /// 取指后的物理地址（中断/取指异常时为空）。
+    pub phys_pc: Option<u32>,
+    /// 取到的原始指令字。
+    pub raw_inst: Option<u32>,
+    /// 已译码指令（用于测试和调试）。
+    pub decoded_inst: Option<Instruction>,
+    /// 本步结束后 PC。
+    pub next_pc: u32,
+    /// 本步结束后特权级。
+    pub privilege_after: u8,
+    /// 若本步入口先处理了中断，这里记录中断 cause。
+    pub interrupt_cause: Option<u32>,
+    /// 若本步触发 trap，这里附带 trap 快照。
+    pub trap: Option<TrapSnapshot>,
+}
+
 /// RISC-V Hart（硬件线程）
 pub struct Hart {
     pub regs: [u32; 32],
@@ -121,6 +162,7 @@ pub struct Hart {
     shutdown_requested: bool,        // SBI shutdown/system_reset 请求
     sbi_timer_deadline: Option<u64>, // SBI set_timer 目标时间（用于生成 STIP）
     suppress_instret: bool,          // 写 minstret/minstreth 后抑制本次递增
+    last_trap: Option<TrapSnapshot>,
     #[cfg(feature = "cached-decode")]
     decode_cache: DecodeCache,
 }
@@ -137,6 +179,7 @@ impl Hart {
             shutdown_requested: false,
             sbi_timer_deadline: None,
             suppress_instret: false,
+            last_trap: None,
             #[cfg(feature = "cached-decode")]
             decode_cache: DecodeCache::new(),
         };
@@ -355,6 +398,7 @@ impl Hart {
 
     /// 触发 trap：根据 medeleg 决定 trap 到 M-mode 还是 S-mode
     pub fn trap(&mut self, cause: u32, tval: u32) {
+        let from_privilege = self.privilege;
         let is_interrupt = (cause & 0x8000_0000) != 0;
         let cause_code = cause & 0x7FFF_FFFF;
 
@@ -399,6 +443,15 @@ impl Hart {
             let mtvec = self.read_csr(MTVEC);
             self.pc = mtvec & !0x3;
         }
+
+        self.last_trap = Some(TrapSnapshot {
+            cause,
+            tval,
+            from_privilege,
+            to_privilege: self.privilege,
+            delegated_to_s: delegated && from_privilege <= 1,
+            trap_vector: self.pc,
+        });
     }
 
     /// 执行 MRET
@@ -663,8 +716,12 @@ impl Hart {
         None
     }
 
-    /// 取指 → 译码 → 执行
-    pub fn step(&mut self, bus: &mut Bus) {
+    /// 取指 → 译码 → 执行，并返回本周期快照（M7 itrace/difftest 使用）
+    pub fn step_snapshot(&mut self, bus: &mut Bus) -> StepSnapshot {
+        let pc = self.pc;
+        let privilege_before = self.privilege;
+        self.last_trap = None;
+
         // 推进 CLINT 时钟 & 同步硬件中断位
         bus.clint.tick();
         self.csrs[TIME as usize] = bus.clint.mtime as u32;
@@ -675,41 +732,86 @@ impl Hart {
         // 检查待处理中断
         if let Some(cause) = self.check_pending_interrupts() {
             self.trap(cause, 0);
-            return;
+            return StepSnapshot {
+                pc,
+                privilege_before,
+                phys_pc: None,
+                raw_inst: None,
+                decoded_inst: None,
+                next_pc: self.pc,
+                privilege_after: self.privilege,
+                interrupt_cause: Some(cause),
+                trap: self.last_trap,
+            };
         }
 
         if self.pc & 0x3 != 0 {
             self.trap(CAUSE_INST_MISALIGNED, self.pc);
             self.increment_counters();
-            return;
+            return StepSnapshot {
+                pc,
+                privilege_before,
+                phys_pc: None,
+                raw_inst: None,
+                decoded_inst: None,
+                next_pc: self.pc,
+                privilege_after: self.privilege,
+                interrupt_cause: None,
+                trap: self.last_trap,
+            };
         }
         let phys_pc = match self.translate(bus, self.pc, AccessType::Execute) {
             Ok(pa) => pa,
             Err((cause, tval)) => {
                 self.trap(cause, tval);
                 self.increment_counters();
-                return;
+                return StepSnapshot {
+                    pc,
+                    privilege_before,
+                    phys_pc: None,
+                    raw_inst: None,
+                    decoded_inst: None,
+                    next_pc: self.pc,
+                    privilege_after: self.privilege,
+                    interrupt_cause: None,
+                    trap: self.last_trap,
+                };
             }
         };
+
+        let raw = bus.read32(phys_pc);
 
         #[cfg(feature = "cached-decode")]
         let inst = if let Some(cached) = self.decode_cache.lookup(phys_pc) {
             cached
         } else {
-            let raw = bus.read32(phys_pc);
             let decoded = decode::decode(raw);
             self.decode_cache.insert(phys_pc, decoded);
             decoded
         };
 
         #[cfg(not(feature = "cached-decode"))]
-        let inst = {
-            let raw = bus.read32(phys_pc);
-            decode::decode(raw)
-        };
+        let inst = decode::decode(raw);
 
         execute::execute(self, bus, inst);
         self.increment_counters();
+
+        StepSnapshot {
+            pc,
+            privilege_before,
+            phys_pc: Some(phys_pc),
+            raw_inst: Some(raw),
+            decoded_inst: Some(inst),
+            next_pc: self.pc,
+            privilege_after: self.privilege,
+            interrupt_cause: None,
+            trap: self.last_trap,
+        }
+    }
+
+    /// 取指 → 译码 → 执行
+    pub fn step(&mut self, bus: &mut Bus) {
+        let _ = self.step_snapshot(bus);
     }
 
     /// 运行指定周期数，返回 tohost 值（如果有）

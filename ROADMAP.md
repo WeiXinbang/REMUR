@@ -13,8 +13,8 @@ M3: 特权架构         ──→  ✅ M/S/U 模式 + 异常委托 + Sv32 页�
 M4: 性能基准与优化   ──→  ✅ criterion + 译码缓存 + u8 寄存器索引
 M5: SoC 外设         ──→  ✅ Device trait + CLINT/PLIC/UART + ELF loader + arch-test 适配 (84/84)
 M6: 启动 Linux       ──→  ✅ 自动下载 + 内核启动 + userspace 入口验证
-M7: 调试/测试        ──→  贯穿 M1-M6，itrace/difftest
-M8: 高级优化（可选） ──→  基本块缓存 + JIT
+M7: 调试/测试        ──→  ✅ M7.1 已完成（itrace + 参考 trace difftest）
+M8: 高级优化（可选） ──→  ⏸ 建议暂缓（待 M7 稳定后）
 ```
 
 ---
@@ -515,6 +515,23 @@ cargo run linux --kernel-addr 0x80400000 --bootargs "earlycon=uart8250,mmio,0x10
 
 ## M7：调试工具（贯穿始终）
 
+### 当前状态（2026-04）
+
+- ✅ 已支持 `--itrace`（指令级事件 trace）
+- ✅ 已支持 `--itrace-file` / `--itrace-limit`（可落盘 + 输出限流）
+- ✅ 已支持 `--difftest-ref`（按事件逐步与参考 trace 对拍）
+- 🚧 M7.2 继续：接入外部参考模型 trace 生成链路（Linux 启动关键片段）
+
+### 建议拆分
+
+1. **M7.1：itrace 最小闭环（已完成）**
+   - 指令级 trace（PC/inst/disasm）
+   - trap/中断入口附加关键 CSR（`mstatus/mcause/mepc/stval`）
+   - CLI 开关与输出采样（避免默认刷屏）
+2. **M7.2：Linux 启动路径 difftest（进行中）**
+   - 先对齐 M→S 切换、异常返回、外部中断入口
+   - 优先覆盖“可稳定复现”的启动片段，不追求首轮全量覆盖
+
 ### itrace
 ```rust
 if ITRACE_ENABLED {
@@ -522,12 +539,26 @@ if ITRACE_ENABLED {
 }
 ```
 
-### difftest（可选）
-与 Spike 逐指令对比寄存器状态，一旦不一致立即报错。
+### difftest（当前最小实现）
+- 参考文件格式：`I/T` 事件流（含 PC、inst、next_pc、特权级、trap 信息）
+- 运行时使用 `--difftest-ref <file>` 逐条比对，不一致立即报错并停止
+- 后续可把 Spike/QEMU trace 适配到该格式，实现跨模型自动回归
+
+### TUI 是否现在要上
+- **建议暂不上**：当前优先级是“可自动回归、可脚本化排障”；CLI trace + difftest 更利于 CI 和批处理。
+- **建议上 TUI 的时机**：M7.2 稳定后，若出现“交互式定位效率明显高于文本 trace”的真实痛点，再引入只读调试面板（寄存器/CSR/最近指令窗口）。
 
 ---
 
 ## M8：高级优化（可选）
+
+### 当前建议（2026-04）
+
+- **建议暂缓**：在缺少稳定调试基线时引入基本块缓存/JIT，容易把功能问题和性能问题耦合在一起。
+- **建议启动条件**：
+  - M7 已可稳定复现并定位 Linux 启动阶段问题
+  - 回归测试（`cargo test` + `cargo arch-test`）可作为优化前后守护
+  - `cargo bench` 已建立明确基线并出现持续性能瓶颈
 
 ### 基本块缓存
 ```rust

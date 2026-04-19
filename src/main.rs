@@ -1,6 +1,6 @@
 use std::env;
 use std::fs;
-use std::io::{Read, Write};
+use std::io::{BufRead, BufReader, Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
@@ -44,6 +44,7 @@ struct NormalOptions {
     tohost_override: Option<u32>,
     signature_file: Option<String>,
     max_cycles: u64,
+    debug: DebugOptions,
 }
 
 struct LinuxOptions {
@@ -55,6 +56,21 @@ struct LinuxOptions {
     initramfs_addr: u32,
     bootargs: String,
     max_cycles: u64,
+    debug: DebugOptions,
+}
+
+#[derive(Default, Clone)]
+struct DebugOptions {
+    itrace: bool,
+    itrace_file: Option<String>,
+    itrace_limit: Option<u64>,
+    difftest_ref: Option<String>,
+}
+
+impl DebugOptions {
+    fn needs_step_snapshots(&self) -> bool {
+        self.itrace || self.difftest_ref.is_some()
+    }
 }
 
 enum Mode {
@@ -72,6 +88,10 @@ fn usage_and_exit() -> ! {
     eprintln!(
         "  --cycles <n>                 最大执行周期数（普通模式默认 10M，Linux 模式默认 200M）"
     );
+    eprintln!("  --itrace                     输出指令级 trace（M7）");
+    eprintln!("  --itrace-file <path>         将 trace 写入文件（默认 stderr）");
+    eprintln!("  --itrace-limit <n>           最多输出 n 条 trace");
+    eprintln!("  --difftest-ref <path>        与参考 trace 逐步对比（M7 最小 difftest）");
     eprintln!();
     eprintln!("Normal mode options:");
     eprintln!("  --tohost <hex_addr>          tohost 地址（raw .bin 用），ELF 自动解析");
@@ -129,6 +149,7 @@ fn parse_mode(args: &[String]) -> Mode {
         let mut bootargs =
             "earlycon=uart8250,mmio,0x10000000 console=ttyS0 rdinit=/bin/sh".to_string();
         let mut max_cycles = DEFAULT_LINUX_MAX_CYCLES;
+        let mut debug = DebugOptions::default();
 
         let mut i = 1usize;
         while i < args.len() {
@@ -157,6 +178,18 @@ fn parse_mode(args: &[String]) -> Mode {
                         .parse::<u64>()
                         .unwrap_or_else(|_| panic!("Invalid --cycles: {}", v));
                 }
+                "--itrace" => debug.itrace = true,
+                "--itrace-file" => debug.itrace_file = Some(take_next(args, &mut i, "--itrace-file")),
+                "--itrace-limit" => {
+                    let v = take_next(args, &mut i, "--itrace-limit");
+                    debug.itrace_limit = Some(
+                        v.parse::<u64>()
+                            .unwrap_or_else(|_| panic!("Invalid --itrace-limit: {}", v)),
+                    );
+                }
+                "--difftest-ref" => {
+                    debug.difftest_ref = Some(take_next(args, &mut i, "--difftest-ref"))
+                }
                 other if other.starts_with("--") => {
                     panic!("Unknown option in linux mode: {}", other)
                 }
@@ -180,12 +213,14 @@ fn parse_mode(args: &[String]) -> Mode {
             initramfs_addr,
             bootargs,
             max_cycles,
+            debug,
         })
     } else {
         let mut input_file: Option<String> = None;
         let mut tohost_override: Option<u32> = None;
         let mut signature_file: Option<String> = None;
         let mut max_cycles = DEFAULT_MAX_CYCLES;
+        let mut debug = DebugOptions::default();
 
         let mut i = 1usize;
         while i < args.len() {
@@ -202,6 +237,18 @@ fn parse_mode(args: &[String]) -> Mode {
                     max_cycles = v
                         .parse::<u64>()
                         .unwrap_or_else(|_| panic!("Invalid --cycles: {}", v));
+                }
+                "--itrace" => debug.itrace = true,
+                "--itrace-file" => debug.itrace_file = Some(take_next(args, &mut i, "--itrace-file")),
+                "--itrace-limit" => {
+                    let v = take_next(args, &mut i, "--itrace-limit");
+                    debug.itrace_limit = Some(
+                        v.parse::<u64>()
+                            .unwrap_or_else(|_| panic!("Invalid --itrace-limit: {}", v)),
+                    );
+                }
+                "--difftest-ref" => {
+                    debug.difftest_ref = Some(take_next(args, &mut i, "--difftest-ref"))
                 }
                 "--linux" => panic!("Use --linux with --kernel for Linux boot mode"),
                 other if other.starts_with("--") => panic!("Unknown option: {}", other),
@@ -225,7 +272,312 @@ fn parse_mode(args: &[String]) -> Mode {
             tohost_override,
             signature_file,
             max_cycles,
+            debug,
         })
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+/// M7 difftest 事件流格式：
+/// - I: 正常取指执行（含可选 trap 字段）
+/// - T: 本步无取指、仅处理 trap/interrupt
+enum DiffEvent {
+    Inst {
+        cycle: u64,
+        pc: u32,
+        inst: u32,
+        next_pc: u32,
+        priv_before: u8,
+        priv_after: u8,
+        trap_cause: Option<u32>,
+        trap_tval: Option<u32>,
+    },
+    Trap {
+        cycle: u64,
+        pc: u32,
+        next_pc: u32,
+        priv_before: u8,
+        priv_after: u8,
+        cause: u32,
+        tval: u32,
+        interrupt: bool,
+    },
+}
+
+fn priv_to_char(privilege: u8) -> char {
+    match privilege {
+        0 => 'U',
+        1 => 'S',
+        3 => 'M',
+        _ => '?',
+    }
+}
+
+fn parse_privilege(text: &str, field: &str) -> Result<u8, String> {
+    match text {
+        "U" => Ok(0),
+        "S" => Ok(1),
+        "M" => Ok(3),
+        _ => Err(format!("invalid {} privilege '{}'", field, text)),
+    }
+}
+
+fn parse_u32_token(token: &str, field: &str) -> Result<u32, String> {
+    let t = token.trim();
+    if let Some(hex) = t.strip_prefix("0x").or_else(|| t.strip_prefix("0X")) {
+        u32::from_str_radix(hex, 16).map_err(|_| format!("invalid {} '{}'", field, token))
+    } else {
+        t.parse::<u32>()
+            .map_err(|_| format!("invalid {} '{}'", field, token))
+    }
+}
+
+fn parse_u64_token(token: &str, field: &str) -> Result<u64, String> {
+    token
+        .trim()
+        .parse::<u64>()
+        .map_err(|_| format!("invalid {} '{}'", field, token))
+}
+
+fn parse_optional_u32_token(token: &str, field: &str) -> Result<Option<u32>, String> {
+    if token.trim() == "-" {
+        Ok(None)
+    } else {
+        parse_u32_token(token, field).map(Some)
+    }
+}
+
+fn format_diff_event(event: &DiffEvent) -> String {
+    match event {
+        DiffEvent::Inst {
+            cycle,
+            pc,
+            inst,
+            next_pc,
+            priv_before,
+            priv_after,
+            trap_cause,
+            trap_tval,
+        } => format!(
+            "I,{cycle},0x{pc:08x},0x{inst:08x},0x{next_pc:08x},{},{},{},{}",
+            priv_to_char(*priv_before),
+            priv_to_char(*priv_after),
+            trap_cause
+                .map(|v| format!("0x{v:08x}"))
+                .unwrap_or_else(|| "-".to_string()),
+            trap_tval
+                .map(|v| format!("0x{v:08x}"))
+                .unwrap_or_else(|| "-".to_string())
+        ),
+        DiffEvent::Trap {
+            cycle,
+            pc,
+            next_pc,
+            priv_before,
+            priv_after,
+            cause,
+            tval,
+            interrupt,
+        } => format!(
+            "T,{cycle},0x{pc:08x},0x{next_pc:08x},{},{},0x{cause:08x},0x{tval:08x},{}",
+            priv_to_char(*priv_before),
+            priv_to_char(*priv_after),
+            if *interrupt { "int" } else { "exc" }
+        ),
+    }
+}
+
+fn parse_diff_event_line(line: &str, line_no: usize) -> Result<Option<DiffEvent>, String> {
+    let trimmed = line.trim();
+    if trimmed.is_empty() || trimmed.starts_with('#') {
+        return Ok(None);
+    }
+    let parts: Vec<&str> = trimmed.split(',').collect();
+    match parts.first().copied() {
+        Some("I") => {
+            if parts.len() != 9 {
+                return Err(format!("line {}: invalid I record '{}'", line_no, trimmed));
+            }
+            Ok(Some(DiffEvent::Inst {
+                cycle: parse_u64_token(parts[1], "cycle")?,
+                pc: parse_u32_token(parts[2], "pc")?,
+                inst: parse_u32_token(parts[3], "inst")?,
+                next_pc: parse_u32_token(parts[4], "next_pc")?,
+                priv_before: parse_privilege(parts[5], "priv_before")?,
+                priv_after: parse_privilege(parts[6], "priv_after")?,
+                trap_cause: parse_optional_u32_token(parts[7], "trap_cause")?,
+                trap_tval: parse_optional_u32_token(parts[8], "trap_tval")?,
+            }))
+        }
+        Some("T") => {
+            if parts.len() != 9 {
+                return Err(format!("line {}: invalid T record '{}'", line_no, trimmed));
+            }
+            let interrupt = match parts[8].trim() {
+                "int" => true,
+                "exc" => false,
+                other => {
+                    return Err(format!(
+                        "line {}: invalid trap type '{}' (expected int/exc)",
+                        line_no, other
+                    ))
+                }
+            };
+            Ok(Some(DiffEvent::Trap {
+                cycle: parse_u64_token(parts[1], "cycle")?,
+                pc: parse_u32_token(parts[2], "pc")?,
+                next_pc: parse_u32_token(parts[3], "next_pc")?,
+                priv_before: parse_privilege(parts[4], "priv_before")?,
+                priv_after: parse_privilege(parts[5], "priv_after")?,
+                cause: parse_u32_token(parts[6], "cause")?,
+                tval: parse_u32_token(parts[7], "tval")?,
+                interrupt,
+            }))
+        }
+        Some(other) => Err(format!(
+            "line {}: unknown record type '{}' in '{}'",
+            line_no, other, trimmed
+        )),
+        None => Ok(None),
+    }
+}
+
+fn diff_event_from_snapshot(cycle: u64, snap: &cpu::StepSnapshot) -> Option<DiffEvent> {
+    if let Some(raw) = snap.raw_inst {
+        let (trap_cause, trap_tval) = if let Some(trap) = snap.trap {
+            (Some(trap.cause), Some(trap.tval))
+        } else {
+            (None, None)
+        };
+        return Some(DiffEvent::Inst {
+            cycle,
+            pc: snap.pc,
+            inst: raw,
+            next_pc: snap.next_pc,
+            priv_before: snap.privilege_before,
+            priv_after: snap.privilege_after,
+            trap_cause,
+            trap_tval,
+        });
+    }
+
+    snap.trap.map(|trap| DiffEvent::Trap {
+        cycle,
+        pc: snap.pc,
+        next_pc: snap.next_pc,
+        priv_before: snap.privilege_before,
+        priv_after: snap.privilege_after,
+        cause: trap.cause,
+        tval: trap.tval,
+        interrupt: snap.interrupt_cause.is_some(),
+    })
+}
+
+/// 管理 M7 运行期调试能力：
+/// - itrace 输出（stderr 或文件）
+/// - 与参考 trace 的逐步对拍
+struct DebugRuntime {
+    opts: DebugOptions,
+    trace_output: Option<fs::File>,
+    emitted: u64,
+    diff_expected: Option<Vec<DiffEvent>>,
+    diff_index: usize,
+}
+
+impl DebugRuntime {
+    fn new(opts: DebugOptions) -> Result<Self, String> {
+        let trace_output = match opts.itrace_file.as_ref() {
+            Some(path) => Some(
+                fs::File::create(path)
+                    .map_err(|e| format!("cannot create itrace file '{}': {}", path, e))?,
+            ),
+            None => None,
+        };
+
+        let diff_expected = match opts.difftest_ref.as_ref() {
+            Some(path) => {
+                let file = fs::File::open(path)
+                    .map_err(|e| format!("cannot open difftest ref '{}': {}", path, e))?;
+                let reader = BufReader::new(file);
+                let mut events = Vec::new();
+                for (i, line) in reader.lines().enumerate() {
+                    let line = line
+                        .map_err(|e| format!("cannot read difftest ref '{}': {}", path, e))?;
+                    if let Some(event) = parse_diff_event_line(&line, i + 1)? {
+                        events.push(event);
+                    }
+                }
+                Some(events)
+            }
+            None => None,
+        };
+
+        Ok(Self {
+            opts,
+            trace_output,
+            emitted: 0,
+            diff_expected,
+            diff_index: 0,
+        })
+    }
+
+    fn emit_trace_line(&mut self, line: &str) -> Result<(), String> {
+        if let Some(limit) = self.opts.itrace_limit
+            && self.emitted >= limit
+        {
+            return Ok(());
+        }
+        if self.opts.itrace {
+            if let Some(file) = self.trace_output.as_mut() {
+                writeln!(file, "{line}").map_err(|e| format!("write itrace failed: {}", e))?;
+            } else {
+                eprintln!("{line}");
+            }
+            self.emitted = self.emitted.saturating_add(1);
+        }
+        Ok(())
+    }
+
+    fn observe_step(&mut self, cycle: u64, snap: &cpu::StepSnapshot) -> Result<(), String> {
+        let Some(actual) = diff_event_from_snapshot(cycle, snap) else {
+            return Ok(());
+        };
+
+        self.emit_trace_line(&format_diff_event(&actual))?;
+
+        if let Some(expected) = self.diff_expected.as_ref() {
+            if self.diff_index >= expected.len() {
+                return Err(format!(
+                    "difftest mismatch at cycle {}: reference ended, actual={}",
+                    cycle,
+                    format_diff_event(&actual)
+                ));
+            }
+            let want = &expected[self.diff_index];
+            if &actual != want {
+                return Err(format!(
+                    "difftest mismatch at cycle {}:\n  expected: {}\n  actual:   {}",
+                    cycle,
+                    format_diff_event(want),
+                    format_diff_event(&actual)
+                ));
+            }
+            self.diff_index += 1;
+        }
+        Ok(())
+    }
+
+    fn finalize(&self) -> Result<(), String> {
+        if let Some(expected) = self.diff_expected.as_ref()
+            && self.diff_index != expected.len()
+        {
+            return Err(format!(
+                "difftest mismatch: actual ended early, matched {} / {} events",
+                self.diff_index,
+                expected.len()
+            ));
+        }
+        Ok(())
     }
 }
 
@@ -250,25 +602,52 @@ fn run_normal_mode(opts: NormalOptions) {
     bus.tohost_addr = tohost;
     let mut hart = cpu::Hart::new();
     hart.pc = entry;
+    let mut debug_runtime = if opts.debug.needs_step_snapshots() {
+        Some(DebugRuntime::new(opts.debug.clone()).unwrap_or_else(|e| panic!("{e}")))
+    } else {
+        None
+    };
 
-    match hart.run(&mut bus, opts.max_cycles) {
-        Some(val) => {
-            if val == 1 {
-                println!("PASS");
-            } else {
-                let test_num = val >> 1;
-                println!("FAIL at test case {}", test_num);
-                std::process::exit(1);
+    let mut tohost_result = None;
+    for cycle in 0..opts.max_cycles {
+        if let Some(debug) = debug_runtime.as_mut() {
+            let snapshot = hart.step_snapshot(&mut bus);
+            if let Err(e) = debug.observe_step(cycle, &snapshot) {
+                eprintln!("{e}");
+                std::process::exit(3);
             }
+        } else {
+            hart.step(&mut bus);
+        }
+
+        if let Some(val) = bus.tohost_value {
+            tohost_result = Some(val);
+            break;
+        }
+    }
+
+    if let Some(debug) = debug_runtime.as_ref()
+        && let Err(e) = debug.finalize()
+    {
+        eprintln!("{e}");
+        std::process::exit(3);
+    }
+
+    match tohost_result {
+        Some(val) if val == 1 => println!("PASS"),
+        Some(val) => {
+            let test_num = val >> 1;
+            println!("FAIL at test case {}", test_num);
+            std::process::exit(1);
         }
         None => {
             eprintln!("Timeout after {} cycles", opts.max_cycles);
             eprintln!("PC  = 0x{:08x}", hart.pc);
             eprintln!("a0  = {} (0x{:08x})", hart.read_reg(10), hart.read_reg(10));
-            if let Some(ref path) = opts.signature_file {
-                if let Some((begin, end)) = sig_bounds {
-                    dump_signature(&bus, begin, end, path);
-                }
+            if let Some(ref path) = opts.signature_file
+                && let Some((begin, end)) = sig_bounds
+            {
+                dump_signature(&bus, begin, end, path);
             }
             std::process::exit(2);
         }
@@ -471,6 +850,7 @@ fn run_linux_mode(opts: LinuxOptions) {
         mut initramfs_addr,
         mut bootargs,
         max_cycles,
+        debug,
     } = opts;
 
     let mem = memory::Memory::new(MEM_SIZE);
@@ -567,9 +947,29 @@ fn run_linux_mode(opts: LinuxOptions) {
             .unwrap_or_else(|| "none".to_string())
     );
 
-    for _ in 0..max_cycles {
-        hart.step(&mut bus);
+    let mut debug_runtime = if debug.needs_step_snapshots() {
+        Some(DebugRuntime::new(debug).unwrap_or_else(|e| panic!("{e}")))
+    } else {
+        None
+    };
+
+    for cycle in 0..max_cycles {
+        if let Some(runtime) = debug_runtime.as_mut() {
+            let snapshot = hart.step_snapshot(&mut bus);
+            if let Err(e) = runtime.observe_step(cycle, &snapshot) {
+                eprintln!("{e}");
+                std::process::exit(3);
+            }
+        } else {
+            hart.step(&mut bus);
+        }
         if hart.shutdown_requested() {
+            if let Some(runtime) = debug_runtime.as_ref()
+                && let Err(e) = runtime.finalize()
+            {
+                eprintln!("{e}");
+                std::process::exit(3);
+            }
             println!("SBI shutdown");
             return;
         }
@@ -577,6 +977,13 @@ fn run_linux_mode(opts: LinuxOptions) {
             eprintln!("Fatal trap to 0 detected");
             break;
         }
+    }
+
+    if let Some(runtime) = debug_runtime.as_ref()
+        && let Err(e) = runtime.finalize()
+    {
+        eprintln!("{e}");
+        std::process::exit(3);
     }
 
     eprintln!("Timeout after {} cycles", max_cycles);

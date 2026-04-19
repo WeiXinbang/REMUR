@@ -12,6 +12,8 @@
 | M4: 性能优化     | ✅ 完成 | criterion + 译码缓存 + u8 寄存器索引 |
 | M5: SoC 外设     | ✅ 完成 | CLINT + PLIC + UART + ELF 加载器 + arch-test 适配 |
 | M6: 启动 Linux   | ✅ 完成 | 内嵌 SBI + DTB(可生成) + 内核/initramfs 加载 |
+| M7: 调试/测试    | ✅ M7.1 已完成 | itrace + 最小 difftest（参考 trace 对拍） |
+| M8: 高级优化(可选) | ⏸ 暂缓 | 基本块缓存/JIT，等 M7 稳定后再做 |
 
 ## 测试结果
 
@@ -65,11 +67,13 @@ cargo run linux --kernel-addr 0x80400000 --bootargs "earlycon=uart8250,mmio,0x10
 ```text
 普通模式:
   remur <binary_or_elf> [--tohost <hex>] [--signature <file>] [--cycles <n>]
+        [--itrace] [--itrace-file <file>] [--itrace-limit <n>] [--difftest-ref <file>]
 
 Linux 模式:
   remur linux [--kernel <image_or_elf>] [--dtb <file>] [--initramfs <file>]
         [--kernel-addr <hex>] [--dtb-addr <hex>] [--initramfs-addr <hex>]
         [--bootargs <string>] [--cycles <n>]
+        [--itrace] [--itrace-file <file>] [--itrace-limit <n>] [--difftest-ref <file>]
 
 Linux 模式（兼容）:
   remur --linux --kernel <image_or_elf> [--dtb <file>] [--initramfs <file>]
@@ -109,6 +113,26 @@ cargo arch-test
 - `cargo run linux`（零配置）会自动下载并缓存预构建 `Image/rootfs`，默认用 4MiB 对齐地址启动（`0x80400000`）。
 - 默认 bootargs 会进入 `rdinit=/bin/sh`，可直接在串口里输入 `ls`。
 - 当前可看到 BusyBox shell 提示符并执行命令（会提示 `can't access tty; job control turned off`，但不影响 `ls`/`echo` 等基本交互）。
+
+### M7 / M8 是否现在开做
+
+- **M7.1 已落地**：`--itrace`/`--itrace-file`/`--itrace-limit` 可输出指令级 trace；`--difftest-ref` 可按事件逐步对拍参考 trace。
+- **M7.2 下一步**：把参考 trace 生成流程接到外部参考模型（如 Spike）启动片段。
+- **建议暂缓 M8**：当前瓶颈还不是解释器吞吐，过早上基本块缓存/JIT 会放大调试成本；等 M7 稳定后再做优化更稳妥。
+- **进入 M8 的门槛**：M7 工具可稳定复现问题、Linux 启动回归可自动化、再开始做性能 A/B（如 `cargo bench` 基线对比）。
+
+### M7 调试命令示例
+
+```bash
+# 输出到 stderr（最多 200 条）
+cargo run -- linux --itrace --itrace-limit 200
+
+# 先生成参考 trace
+cargo run -- tests/bins/rv32ui-p-add.elf --itrace --itrace-file target\trace\add.ref
+
+# 再用同一 workload 做 difftest 对拍
+cargo run -- tests/bins/rv32ui-p-add.elf --difftest-ref target\trace\add.ref
+```
 
 ## 项目结构
 
