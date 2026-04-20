@@ -76,13 +76,13 @@ fn run_riscv_arch_framework() {
                 "-ExecutionPolicy",
                 "Bypass",
                 "-Command",
-                "bash scripts/run-arch-test.sh --skip-build",
+                "bash -l scripts/run-arch-test.sh --skip-build",
             ])
             .status()
             .expect("failed to execute arch-test runner through bash")
     } else {
         Command::new("bash")
-            .args(["scripts/run-arch-test.sh", "--skip-build"])
+            .args(["-l", "scripts/run-arch-test.sh", "--skip-build"])
             .status()
             .expect("failed to execute scripts/run-arch-test.sh")
     };

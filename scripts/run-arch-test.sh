@@ -94,6 +94,23 @@ cp -r "$REMUR_CONFIG_DIR"/* "$DEST_CONFIG/"
 
 # 更新 run_cmd.txt 使用绝对路径
 echo "$REMUR_BIN" > "$DEST_CONFIG/remur-rv32ima/run_cmd.txt"
+
+# 如果是 Windows .exe，创建路径转换 wrapper
+if [[ "$REMUR_BIN" == *.exe ]]; then
+    WRAPPER="$DEST_CONFIG/remur-rv32ima/run_dut.sh"
+    cat > "$WRAPPER" << 'WEOF'
+#!/bin/bash
+# Wrapper: 将 WSL 路径转换为 Windows 路径后调用 remur.exe
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+REMUR_EXE="$(cat "$SCRIPT_DIR/run_cmd.txt")"
+WIN_PATH="$(wslpath -w "$1")"
+"$REMUR_EXE" "$WIN_PATH"
+WEOF
+    chmod +x "$WRAPPER"
+    RUN_CMD="$WRAPPER"
+else
+    RUN_CMD="$REMUR_BIN"
+fi
 echo "  ✅ Config installed"
 
 # ── Step 4: Clean (可选) ──────────────────────────
@@ -155,7 +172,7 @@ if [ ! -d "$ELF_DIR" ] || [ -z "$(ls -A "$ELF_DIR" 2>/dev/null)" ]; then
     exit 1
 fi
 
-python3 "$ARCH_TEST_DIR/run_tests.py" "$REMUR_BIN" "$ELF_DIR"
+python3 "$ARCH_TEST_DIR/run_tests.py" "$RUN_CMD" "$ELF_DIR"
 
 echo ""
 echo "═══════════════════════════════════════════"
