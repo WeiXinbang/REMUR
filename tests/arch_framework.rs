@@ -1,14 +1,11 @@
-//! riscv-arch-test 框架回归测试（默认忽略）
+//! riscv-arch-test 框架回归测试
 //!
-//! 运行方式：
-//!   cargo arch-test
-//! 或
-//!   cargo test --test arch_framework -- --ignored --nocapture
+//! 依赖：WSL + riscv64-unknown-elf-gcc + python3
+//! 首次运行会自动 clone riscv-arch-test 并编译 ELF。
 
 use std::process::Command;
 
 #[test]
-#[ignore = "requires Linux/WSL toolchain and may take a long time"]
 fn run_riscv_arch_framework() {
     let status = if cfg!(windows) {
         Command::new("powershell")
@@ -17,13 +14,13 @@ fn run_riscv_arch_framework() {
                 "-ExecutionPolicy",
                 "Bypass",
                 "-Command",
-                "bash scripts/run-arch-test.sh --skip-build",
+                "bash scripts/run-arch-test.sh",
             ])
             .status()
             .expect("failed to execute arch-test runner through bash")
     } else {
         Command::new("bash")
-            .args(["scripts/run-arch-test.sh", "--skip-build"])
+            .args(["scripts/run-arch-test.sh"])
             .status()
             .expect("failed to execute scripts/run-arch-test.sh")
     };
