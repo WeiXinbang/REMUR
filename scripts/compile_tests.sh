@@ -6,13 +6,11 @@ set -e
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PROJECT_DIR="$(dirname "$SCRIPT_DIR")"
 
-# 如果 riscv-tests 不完整（缺 rv64ui），从上游获取
-if [ ! -d "$PROJECT_DIR/riscv-tests/isa/rv64ui" ]; then
-    echo "Fetching full riscv-tests from upstream..."
-    TMPDIR=$(mktemp -d)
-    git clone --depth 1 https://github.com/riscv-software-src/riscv-tests.git "$TMPDIR/riscv-tests"
-    cp -rn "$TMPDIR/riscv-tests/isa/"* "$PROJECT_DIR/riscv-tests/isa/" 2>/dev/null || true
-    rm -rf "$TMPDIR"
+# 如果 riscv-tests 不存在，从上游获取
+if [ ! -d "$PROJECT_DIR/riscv-tests/isa/rv32ui" ]; then
+    echo "Fetching riscv-tests from upstream..."
+    rm -rf "$PROJECT_DIR/riscv-tests"
+    git clone --depth 1 https://github.com/riscv-software-src/riscv-tests.git "$PROJECT_DIR/riscv-tests"
 fi
 
 ISA_DIR="$PROJECT_DIR/riscv-tests/isa"

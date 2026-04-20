@@ -1,12 +1,11 @@
 # Rust 编译产物
 /target/
 
-# 二进制测试文件（太大，不需要上传）
-*.bin
-*.elf
+# 测试二进制（编译产物）
 tests/bins/
 
-# riscv-arch-test（由脚本自动 clone）
+# 测试框架（由脚本自动 clone）
+/riscv-tests/
 /riscv-arch-test/
 
 # IDE
