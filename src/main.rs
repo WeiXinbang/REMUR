@@ -16,6 +16,8 @@ mod instruction;
 mod loader;
 mod memory;
 mod plic;
+#[cfg(feature = "tui")]
+mod tui;
 mod uart;
 
 const MEM_SIZE: usize = 128 * 1024 * 1024;
@@ -45,6 +47,7 @@ struct NormalOptions {
     signature_file: Option<String>,
     max_cycles: u64,
     debug: DebugOptions,
+    tui: bool,
 }
 
 struct LinuxOptions {
@@ -57,6 +60,7 @@ struct LinuxOptions {
     bootargs: String,
     max_cycles: u64,
     debug: DebugOptions,
+    tui: bool,
 }
 
 #[derive(Default, Clone)]
@@ -154,12 +158,14 @@ fn parse_mode(args: &[String]) -> Mode {
             "earlycon=uart8250,mmio,0x10000000 console=ttyS0 rdinit=/bin/sh".to_string();
         let mut max_cycles = DEFAULT_LINUX_MAX_CYCLES;
         let mut debug = DebugOptions::default();
+        let mut use_tui = false;
 
         let mut i = 1usize;
         while i < args.len() {
             match args[i].as_str() {
                 "linux" if i == 1 => {}
                 "--linux" => {}
+                "--tui" => use_tui = true,
                 "--kernel" => kernel_file = Some(take_next(args, &mut i, "--kernel")),
                 "--dtb" => dtb_file = Some(take_next(args, &mut i, "--dtb")),
                 "--initramfs" => initramfs_file = Some(take_next(args, &mut i, "--initramfs")),
@@ -224,6 +230,7 @@ fn parse_mode(args: &[String]) -> Mode {
             bootargs,
             max_cycles,
             debug,
+            tui: use_tui,
         })
     } else {
         let mut input_file: Option<String> = None;
@@ -231,10 +238,12 @@ fn parse_mode(args: &[String]) -> Mode {
         let mut signature_file: Option<String> = None;
         let mut max_cycles = DEFAULT_MAX_CYCLES;
         let mut debug = DebugOptions::default();
+        let mut use_tui = false;
 
         let mut i = 1usize;
         while i < args.len() {
             match args[i].as_str() {
+                "--tui" => use_tui = true,
                 "--tohost" => {
                     let v = take_next(args, &mut i, "--tohost");
                     tohost_override = Some(parse_u32_addr(&v, "--tohost"));
@@ -289,6 +298,7 @@ fn parse_mode(args: &[String]) -> Mode {
             signature_file,
             max_cycles,
             debug,
+            tui: use_tui,
         })
     }
 }
@@ -715,6 +725,17 @@ fn run_normal_mode(opts: NormalOptions) {
     let mut hart = cpu::Hart::new();
     hart.pc = entry;
 
+    #[cfg(feature = "tui")]
+    if opts.tui {
+        bus.uart.enable_capture();
+        tui::run_tui_normal(&mut hart, &mut bus, opts.max_cycles);
+        return;
+    }
+    #[cfg(not(feature = "tui"))]
+    if opts.tui {
+        panic!("TUI 功能未编译，请使用 --features tui 重新构建");
+    }
+
     let mut debug_opts = opts.debug.clone();
     if let Err(e) = prepare_difftest_ref(
         &mut debug_opts,
@@ -977,6 +998,7 @@ fn run_linux_mode(opts: LinuxOptions) {
         mut bootargs,
         max_cycles,
         mut debug,
+        tui: use_tui,
     } = opts;
 
     let mem = memory::Memory::new(MEM_SIZE);
@@ -1072,6 +1094,17 @@ fn run_linux_mode(opts: LinuxOptions) {
             .map(|(s, _)| format!("0x{:08x}", s))
             .unwrap_or_else(|| "none".to_string())
     );
+
+    #[cfg(feature = "tui")]
+    if use_tui {
+        bus.uart.enable_capture();
+        tui::run_tui_linux(&mut hart, &mut bus, max_cycles);
+        return;
+    }
+    #[cfg(not(feature = "tui"))]
+    if use_tui {
+        panic!("TUI 功能未编译，请使用 --features tui 重新构建");
+    }
 
     if let Err(e) = prepare_difftest_ref(
         &mut debug,

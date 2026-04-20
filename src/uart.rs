@@ -12,6 +12,8 @@ use std::thread;
 /// - LSR 状态位（DR/TEMT/THRE）
 pub struct Uart {
     rx_fifo: VecDeque<u8>,
+    tx_buffer: VecDeque<u8>,
+    capture_output: bool,
     ier: u8,
     lcr: u8,
     mcr: u8,
@@ -28,6 +30,8 @@ impl Uart {
     pub fn new() -> Self {
         Uart {
             rx_fifo: VecDeque::new(),
+            tx_buffer: VecDeque::new(),
+            capture_output: false,
             ier: 0,
             lcr: 0,
             mcr: 0,
@@ -88,6 +92,18 @@ impl Uart {
             }
         }
         self.interrupt_pending()
+    }
+
+    /// 启用输出捕获模式（TUI 用）：输出不打印到 stdout，而是存入缓冲区。
+    #[allow(dead_code)]
+    pub fn enable_capture(&mut self) {
+        self.capture_output = true;
+    }
+
+    /// 从输出缓冲区弹出一个字节（TUI 轮询用）。
+    #[allow(dead_code)]
+    pub fn pop_output(&mut self) -> Option<u8> {
+        self.tx_buffer.pop_front()
     }
 }
 
@@ -150,8 +166,12 @@ impl super::bus::Device for Uart {
                 if self.dlab() {
                     self.dll = val;
                 } else {
-                    print!("{}", val as char);
-                    let _ = io::stdout().flush();
+                    if self.capture_output {
+                        self.tx_buffer.push_back(val);
+                    } else {
+                        print!("{}", val as char);
+                        let _ = io::stdout().flush();
+                    }
                     if (self.ier & 0x02) != 0 {
                         self.tx_irq_pending = true;
                     }
