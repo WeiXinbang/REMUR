@@ -105,6 +105,15 @@ impl Uart {
     pub fn pop_output(&mut self) -> Option<u8> {
         self.tx_buffer.pop_front()
     }
+
+    /// 向 RX FIFO 注入一个字节（TUI 键盘输入用）。
+    #[allow(dead_code)]
+    pub fn push_input(&mut self, byte: u8) {
+        self.rx_fifo.push_back(byte);
+        if (self.ier & 0x01) != 0 {
+            self.rx_irq_pending = true;
+        }
+    }
 }
 
 // 寄存器偏移

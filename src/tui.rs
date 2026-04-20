@@ -30,6 +30,7 @@ pub struct TuiState {
     running: bool,
     finished: bool,
     finish_reason: Option<String>,
+    step_request: u64, // 单步请求的步数（0=无请求）
 }
 
 impl TuiState {
@@ -41,6 +42,7 @@ impl TuiState {
             running: true,
             finished: false,
             finish_reason: None,
+            step_request: 0,
         }
     }
 }
@@ -76,9 +78,11 @@ pub fn run_tui_linux(hart: &mut Hart, bus: &mut Bus, max_cycles: u64) {
         // 处理输入事件
         if event::poll(Duration::from_millis(1)).unwrap_or(false) {
             if let Ok(Event::Key(key)) = event::read() {
-                match handle_key(key, &mut state) {
+                match handle_key(key, &state) {
                     KeyAction::Quit => break,
                     KeyAction::TogglePause => state.running = !state.running,
+                    KeyAction::Step(n) => state.step_request = n,
+                    KeyAction::Input(byte) => bus.uart.push_input(byte),
                     KeyAction::None => {}
                 }
             }
@@ -86,6 +90,37 @@ pub fn run_tui_linux(hart: &mut Hart, bus: &mut Bus, max_cycles: u64) {
 
         if state.finished {
             // 结束后等待用户按 q 退出
+            continue;
+        }
+
+        // 单步模式：暂停时执行请求的步数
+        if state.step_request > 0 && !state.running {
+            let steps = state.step_request;
+            state.step_request = 0;
+            for _ in 0..steps {
+                if state.cycle >= state.max_cycles {
+                    state.finished = true;
+                    state.finish_reason = Some("达到最大周期数".to_string());
+                    break;
+                }
+                hart.step(bus);
+                state.cycle += 1;
+                while let Some(ch) = bus.uart.pop_output() {
+                    if ch != b'\r' {
+                        state.uart_buffer.push(ch as char);
+                    }
+                }
+                if hart.shutdown_requested() {
+                    state.finished = true;
+                    state.finish_reason = Some("SBI shutdown".to_string());
+                    break;
+                }
+                if hart.pc == 0 {
+                    state.finished = true;
+                    state.finish_reason = Some("Fatal: PC=0".to_string());
+                    break;
+                }
+            }
             continue;
         }
 
@@ -159,15 +194,46 @@ pub fn run_tui_normal(hart: &mut Hart, bus: &mut Bus, max_cycles: u64) {
 
         if event::poll(Duration::from_millis(1)).unwrap_or(false) {
             if let Ok(Event::Key(key)) = event::read() {
-                match handle_key(key, &mut state) {
+                match handle_key(key, &state) {
                     KeyAction::Quit => break,
                     KeyAction::TogglePause => state.running = !state.running,
+                    KeyAction::Step(n) => state.step_request = n,
+                    KeyAction::Input(byte) => bus.uart.push_input(byte),
                     KeyAction::None => {}
                 }
             }
         }
 
-        if state.finished || !state.running {
+        if state.finished {
+            continue;
+        }
+
+        // 单步模式
+        if state.step_request > 0 && !state.running {
+            let steps = state.step_request;
+            state.step_request = 0;
+            for _ in 0..steps {
+                if state.cycle >= state.max_cycles {
+                    state.finished = true;
+                    state.finish_reason = Some("Timeout".to_string());
+                    break;
+                }
+                hart.step(bus);
+                state.cycle += 1;
+                if let Some(val) = bus.tohost_value {
+                    state.finished = true;
+                    if val == 1 {
+                        state.finish_reason = Some("PASS".to_string());
+                    } else {
+                        state.finish_reason = Some(format!("FAIL (test case {})", val >> 1));
+                    }
+                    break;
+                }
+            }
+            continue;
+        }
+
+        if !state.running {
             continue;
         }
 
@@ -206,14 +272,50 @@ pub fn run_tui_normal(hart: &mut Hart, bus: &mut Bus, max_cycles: u64) {
 enum KeyAction {
     Quit,
     TogglePause,
+    Step(u64),       // 单步 N 条指令
+    Input(u8),       // 转发给 UART 的键盘输入
     None,
 }
 
-fn handle_key(key: KeyEvent, _state: &mut TuiState) -> KeyAction {
+fn handle_key(key: KeyEvent, state: &TuiState) -> KeyAction {
+    // Ctrl+C / Esc / q 始终退出
+    if key.code == KeyCode::Char('c') && key.modifiers.contains(KeyModifiers::CONTROL) {
+        return KeyAction::Quit;
+    }
+    if key.code == KeyCode::Esc {
+        return KeyAction::Quit;
+    }
+
+    // 暂停状态下的控制键
+    if !state.running && !state.finished {
+        match key.code {
+            KeyCode::Char('q') => return KeyAction::Quit,
+            KeyCode::Char(' ') => return KeyAction::TogglePause,
+            KeyCode::Char('n') => return KeyAction::Step(1),      // 单步 1 条
+            KeyCode::Char('N') => return KeyAction::Step(10),     // 单步 10 条
+            KeyCode::Char('m') => return KeyAction::Step(100),    // 单步 100 条
+            KeyCode::Char('M') => return KeyAction::Step(1000),   // 单步 1000 条
+            _ => return KeyAction::None,
+        }
+    }
+
+    // 运行状态下
+    if state.running && !state.finished {
+        match key.code {
+            KeyCode::Char('q') => return KeyAction::Quit,
+            KeyCode::Char(' ') => return KeyAction::TogglePause,
+            // 其他字符转发给 UART
+            KeyCode::Char(c) => return KeyAction::Input(c as u8),
+            KeyCode::Enter => return KeyAction::Input(b'\n'),
+            KeyCode::Backspace => return KeyAction::Input(0x7f),
+            KeyCode::Tab => return KeyAction::Input(b'\t'),
+            _ => return KeyAction::None,
+        }
+    }
+
+    // 已结束
     match key.code {
-        KeyCode::Char('q') | KeyCode::Esc => KeyAction::Quit,
-        KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => KeyAction::Quit,
-        KeyCode::Char(' ') => KeyAction::TogglePause,
+        KeyCode::Char('q') | KeyCode::Char(' ') => KeyAction::Quit,
         _ => KeyAction::None,
     }
 }
@@ -378,9 +480,9 @@ fn draw_statusbar(frame: &mut ratatui::Frame, state: &TuiState, area: Rect) {
             .unwrap_or("done");
         format!(" ■ {} | q 退出", reason)
     } else if state.running {
-        " ▶ 运行中 | Space 暂停 | q 退出".to_string()
+        " ▶ 运行中 | Space 暂停 | q 退出 | 键盘输入→UART".to_string()
     } else {
-        " ⏸ 已暂停 | Space 继续 | q 退出".to_string()
+        " ⏸ 已暂停 | Space 继续 | n 单步 | N×10 | m×100 | M×1000 | q 退出".to_string()
     };
 
     let style = if state.finished {
