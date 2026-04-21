@@ -66,41 +66,25 @@ cargo run linux --kernel-addr 0x80400000 --bootargs "earlycon=uart8250,mmio,0x10
 
 ```text
 普通模式:
-<<<<<<< Updated upstream
-  remur <binary_or_elf> [--tohost <hex>] [--signature <file>] [--cycles <n>]
-        [--itrace] [--itrace-file <file>] [--itrace-limit <n>] [--difftest-ref <file>]
-        [--difftest-ref-cmd <cmd>] [--difftest-ref-out <file>]
-=======
   remur <binary_or_elf> [--tohost <hex>] [--signature <file>] [--cycles <n>] [--no-limit]
         [--tui] [--itrace] [--itrace-file <file>] [--itrace-limit <n>]
         [--difftest-ref <file>] [--difftest-ref-cmd <cmd>] [--difftest-ref-out <file>]
->>>>>>> Stashed changes
 
 Linux 模式:
   remur linux [--kernel <image_or_elf>] [--dtb <file>] [--initramfs <file>]
         [--kernel-addr <hex>] [--dtb-addr <hex>] [--initramfs-addr <hex>]
-<<<<<<< Updated upstream
-        [--bootargs <string>] [--cycles <n>]
-        [--itrace] [--itrace-file <file>] [--itrace-limit <n>] [--difftest-ref <file>]
-        [--difftest-ref-cmd <cmd>] [--difftest-ref-out <file>]
-=======
         [--bootargs <string>] [--cycles <n>] [--no-limit] [--tui]
         [--itrace] [--itrace-file <file>] [--itrace-limit <n>]
         [--difftest-ref <file>] [--difftest-ref-cmd <cmd>] [--difftest-ref-out <file>]
->>>>>>> Stashed changes
 
 Linux 模式（兼容）:
   remur --linux --kernel <image_or_elf> [--dtb <file>] [--initramfs <file>]
         [--kernel-addr <hex>] [--dtb-addr <hex>] [--initramfs-addr <hex>]
-<<<<<<< Updated upstream
-        [--bootargs <string>] [--cycles <n>]
-=======
         [--bootargs <string>] [--cycles <n>] [--no-limit]
 
 TUI 仪表盘（需要 --features tui 编译）:
   remur linux --tui              # Linux 模式 TUI
   remur test.elf --tui           # 普通模式 TUI
->>>>>>> Stashed changes
 ```
 
 也可以用脚本：
@@ -114,23 +98,18 @@ TUI 仪表盘（需要 --features tui 编译）:
 ### 测试命令说明
 
 ```bash
-# 默认：集成测试（riscv-tests + 外设 + Linux 启动烟雾）
+# 全量测试（riscv-tests + arch-test 合规 + 外设 + SBI + Linux 烟雾）
 cargo test
 
-# 若 tests/bins 缺失，会自动拉源码并编译 riscv-tests
+# 环境要求：WSL + riscv64-unknown-elf-gcc + python3
+# 首次运行会自动 clone 并编译所有测试二进制
 
-# 运行 riscv-arch-test 官方框架（耗时长，默认不随 cargo test 执行）
+# 单独跑 arch-test（等价于 cargo test --test arch_framework）
 cargo arch-test
 ```
 
-### M5 架构测试怎么用（riscv-arch-test）
+### TUI 仪表盘
 
-<<<<<<< Updated upstream
-- `cargo test`：默认只跑仓库内快速/常规测试，不包含 arch framework。
-- `cargo arch-test`：运行 `tests/arch_framework.rs`（`#[ignore]`）触发官方框架流程。
-- 环境要求：Linux/WSL + `riscv64-unknown-elf-*` 交叉工具链 + Python 依赖（由 `scripts/run-arch-test.sh` 使用）。
-- 结论：配置已接好，命令入口也已接好；是否能完整跑完取决于本机 Linux/WSL 工具链环境。
-=======
 展示 CPU 寄存器、CSR、UART 输出的终端仪表盘，适合视频演示：
 
 ```bash
@@ -156,7 +135,6 @@ cargo run --features tui -- tests/bins/rv32ui-p-add.elf --tui
 - `cargo test` 会自动运行 arch-test 合规测试（含 clone 仓库 + 编译 ELF + 签名对比）。
 - 环境要求：WSL + `riscv64-unknown-elf-*` 交叉工具链 + Python 3。
 - 也可单独运行：`cargo arch-test`。
->>>>>>> Stashed changes
 
 ### M6 Linux 启动现状（含 ls 说明）
 

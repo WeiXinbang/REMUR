@@ -94,11 +94,8 @@ fn usage_and_exit() -> ! {
     eprintln!(
         "  --cycles <n>                 最大执行周期数（普通模式默认 10M，Linux 模式默认 200M）"
     );
-<<<<<<< Updated upstream
-=======
     eprintln!("  --no-limit                   不限制执行周期数（运行直到程序结束）");
     eprintln!("  --tui                        TUI 仪表盘模式（需要 --features tui 编译）");
->>>>>>> Stashed changes
     eprintln!("  --itrace                     输出指令级 trace（M7）");
     eprintln!("  --itrace-file <path>         将 trace 写入文件（默认 stderr）");
     eprintln!("  --itrace-limit <n>           最多输出 n 条 trace");
