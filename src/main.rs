@@ -20,7 +20,7 @@ mod plic;
 mod tui;
 mod uart;
 
-use crate::debug_trace::{DebugRuntime, DifftestContext, prepare_difftest_ref};
+use crate::debug_trace::{DifftestContext, build_debug_runtime, ensure_debug_runtime_complete};
 
 const MEM_SIZE: usize = 128 * 1024 * 1024;
 const DEFAULT_MAX_CYCLES: u64 = 10_000_000;
@@ -139,7 +139,7 @@ fn parse_u32_addr(text: &str, name: &str) -> u32 {
         .unwrap_or_else(|_| panic!("Invalid {}: {}", name, text))
 }
 
-fn take_next(args: &[String], i: &mut usize, name: &str) -> String {
+fn take_required_value(args: &[String], i: &mut usize, name: &str) -> String {
     *i += 1;
     if *i >= args.len() {
         panic!("Missing value for {}", name);
@@ -148,34 +148,36 @@ fn take_next(args: &[String], i: &mut usize, name: &str) -> String {
 }
 
 fn parse_u64_arg(args: &[String], i: &mut usize, name: &str) -> u64 {
-    let value = take_next(args, i, name);
+    let value = take_required_value(args, i, name);
     value
         .parse::<u64>()
         .unwrap_or_else(|_| panic!("Invalid {}: {}", name, value))
 }
 
 /// 解析普通模式 / Linux 模式共享的运行时开关。
-fn parse_common_run_option(
+fn parse_shared_runtime_option(
     arg: &str,
     args: &[String],
     i: &mut usize,
     max_cycles: &mut u64,
     debug: &mut DebugOptions,
-    use_tui: &mut bool,
+    enable_tui: &mut bool,
 ) -> bool {
     match arg {
-        "--tui" => *use_tui = true,
+        "--tui" => *enable_tui = true,
         "--cycles" => *max_cycles = parse_u64_arg(args, i, "--cycles"),
         "--no-limit" => *max_cycles = u64::MAX,
         "--itrace" => debug.itrace = true,
-        "--itrace-file" => debug.itrace_file = Some(take_next(args, i, "--itrace-file")),
+        "--itrace-file" => debug.itrace_file = Some(take_required_value(args, i, "--itrace-file")),
         "--itrace-limit" => debug.itrace_limit = Some(parse_u64_arg(args, i, "--itrace-limit")),
-        "--difftest-ref" => debug.difftest_ref = Some(take_next(args, i, "--difftest-ref")),
+        "--difftest-ref" => {
+            debug.difftest_ref = Some(take_required_value(args, i, "--difftest-ref"))
+        }
         "--difftest-ref-cmd" => {
-            debug.difftest_ref_cmd = Some(take_next(args, i, "--difftest-ref-cmd"))
+            debug.difftest_ref_cmd = Some(take_required_value(args, i, "--difftest-ref-cmd"))
         }
         "--difftest-ref-out" => {
-            debug.difftest_ref_out = Some(take_next(args, i, "--difftest-ref-out"))
+            debug.difftest_ref_out = Some(take_required_value(args, i, "--difftest-ref-out"))
         }
         _ => return false,
     }
@@ -197,12 +199,19 @@ fn parse_linux_options(args: &[String]) -> LinuxOptions {
     let mut bootargs = DEFAULT_LINUX_BOOTARGS.to_string();
     let mut max_cycles = DEFAULT_LINUX_MAX_CYCLES;
     let mut debug = DebugOptions::default();
-    let mut use_tui = false;
+    let mut enable_tui = false;
 
     let mut i = 1usize;
     while i < args.len() {
         let arg = args[i].as_str();
-        if parse_common_run_option(arg, args, &mut i, &mut max_cycles, &mut debug, &mut use_tui) {
+        if parse_shared_runtime_option(
+            arg,
+            args,
+            &mut i,
+            &mut max_cycles,
+            &mut debug,
+            &mut enable_tui,
+        ) {
             i += 1;
             continue;
         }
@@ -210,22 +219,24 @@ fn parse_linux_options(args: &[String]) -> LinuxOptions {
         match arg {
             "linux" if i == 1 => {}
             "--linux" => {}
-            "--kernel" => kernel_file = Some(take_next(args, &mut i, "--kernel")),
-            "--dtb" => dtb_file = Some(take_next(args, &mut i, "--dtb")),
-            "--initramfs" => initramfs_file = Some(take_next(args, &mut i, "--initramfs")),
+            "--kernel" => kernel_file = Some(take_required_value(args, &mut i, "--kernel")),
+            "--dtb" => dtb_file = Some(take_required_value(args, &mut i, "--dtb")),
+            "--initramfs" => {
+                initramfs_file = Some(take_required_value(args, &mut i, "--initramfs"))
+            }
             "--kernel-addr" => {
-                let value = take_next(args, &mut i, "--kernel-addr");
+                let value = take_required_value(args, &mut i, "--kernel-addr");
                 kernel_addr = parse_u32_addr(&value, "--kernel-addr");
             }
             "--dtb-addr" => {
-                let value = take_next(args, &mut i, "--dtb-addr");
+                let value = take_required_value(args, &mut i, "--dtb-addr");
                 dtb_addr = parse_u32_addr(&value, "--dtb-addr");
             }
             "--initramfs-addr" => {
-                let value = take_next(args, &mut i, "--initramfs-addr");
+                let value = take_required_value(args, &mut i, "--initramfs-addr");
                 initramfs_addr = parse_u32_addr(&value, "--initramfs-addr");
             }
-            "--bootargs" => bootargs = take_next(args, &mut i, "--bootargs"),
+            "--bootargs" => bootargs = take_required_value(args, &mut i, "--bootargs"),
             other if other.starts_with("--") => panic!("Unknown option in linux mode: {}", other),
             other => {
                 if kernel_file.is_none() {
@@ -248,7 +259,7 @@ fn parse_linux_options(args: &[String]) -> LinuxOptions {
         bootargs,
         max_cycles,
         debug,
-        tui: use_tui,
+        tui: enable_tui,
     }
 }
 
@@ -259,22 +270,31 @@ fn parse_normal_options(args: &[String]) -> NormalOptions {
     let mut signature_file: Option<String> = None;
     let mut max_cycles = DEFAULT_MAX_CYCLES;
     let mut debug = DebugOptions::default();
-    let mut use_tui = false;
+    let mut enable_tui = false;
 
     let mut i = 1usize;
     while i < args.len() {
         let arg = args[i].as_str();
-        if parse_common_run_option(arg, args, &mut i, &mut max_cycles, &mut debug, &mut use_tui) {
+        if parse_shared_runtime_option(
+            arg,
+            args,
+            &mut i,
+            &mut max_cycles,
+            &mut debug,
+            &mut enable_tui,
+        ) {
             i += 1;
             continue;
         }
 
         match arg {
             "--tohost" => {
-                let value = take_next(args, &mut i, "--tohost");
+                let value = take_required_value(args, &mut i, "--tohost");
                 tohost_override = Some(parse_u32_addr(&value, "--tohost"));
             }
-            "--signature" => signature_file = Some(take_next(args, &mut i, "--signature")),
+            "--signature" => {
+                signature_file = Some(take_required_value(args, &mut i, "--signature"))
+            }
             "--linux" => panic!("Use --linux with --kernel for Linux boot mode"),
             other if other.starts_with("--") => panic!("Unknown option: {}", other),
             other => {
@@ -297,7 +317,7 @@ fn parse_normal_options(args: &[String]) -> NormalOptions {
         signature_file,
         max_cycles,
         debug,
-        tui: use_tui,
+        tui: enable_tui,
     }
 }
 
@@ -313,6 +333,7 @@ fn parse_mode(args: &[String]) -> Mode {
     }
 }
 
+/// TUI 默认应持续运行直到用户主动退出；只有显式传入 --cycles 时才保留上限。
 fn resolve_tui_cycles(max_cycles: u64, default_cycles: u64) -> u64 {
     if max_cycles == default_cycles {
         u64::MAX
@@ -356,24 +377,16 @@ fn run_normal_mode(opts: NormalOptions) {
         panic!("TUI 功能未编译，请使用 --features tui 重新构建");
     }
 
-    let mut debug_opts = opts.debug.clone();
-    if let Err(e) = prepare_difftest_ref(
-        &mut debug_opts,
-        &DifftestContext {
+    let mut debug_runtime = build_debug_runtime(
+        opts.debug.clone(),
+        DifftestContext {
             mode: "normal",
             workload: &opts.input_file,
             kernel: None,
             bootargs: None,
         },
-    ) {
-        panic!("{e}");
-    }
-
-    let mut debug_runtime = if debug_opts.needs_step_snapshots() {
-        Some(DebugRuntime::new(debug_opts).unwrap_or_else(|e| panic!("{e}")))
-    } else {
-        None
-    };
+    )
+    .unwrap_or_else(|e| panic!("{e}"));
 
     let mut tohost_result = None;
     for cycle in 0..opts.max_cycles {
@@ -393,9 +406,7 @@ fn run_normal_mode(opts: NormalOptions) {
         }
     }
 
-    if let Some(debug) = debug_runtime.as_ref()
-        && let Err(e) = debug.finalize()
-    {
+    if let Err(e) = ensure_debug_runtime_complete(debug_runtime.as_ref()) {
         eprintln!("{e}");
         std::process::exit(3);
     }

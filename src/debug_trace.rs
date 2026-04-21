@@ -114,6 +114,26 @@ pub(crate) fn prepare_difftest_ref(
     Ok(())
 }
 
+/// 按当前运行上下文补齐参考 trace，并在确有需求时创建调试运行时。
+pub(crate) fn build_debug_runtime(
+    mut debug: DebugOptions,
+    ctx: DifftestContext<'_>,
+) -> Result<Option<DebugRuntime>, String> {
+    prepare_difftest_ref(&mut debug, &ctx)?;
+    if debug.needs_step_snapshots() {
+        Ok(Some(DebugRuntime::new(debug)?))
+    } else {
+        Ok(None)
+    }
+}
+
+pub(crate) fn ensure_debug_runtime_complete(runtime: Option<&DebugRuntime>) -> Result<(), String> {
+    if let Some(runtime) = runtime {
+        runtime.finalize()?;
+    }
+    Ok(())
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 /// M7 difftest 事件流格式：
 /// - I: 正常取指执行（含可选 trap 字段）

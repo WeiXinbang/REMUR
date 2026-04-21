@@ -13,7 +13,7 @@ use std::process::Command;
 
 use crate::bus::{self, Bus};
 use crate::cpu::{self, Hart};
-use crate::debug_trace::{DebugRuntime, DifftestContext, prepare_difftest_ref};
+use crate::debug_trace::{DifftestContext, build_debug_runtime, ensure_debug_runtime_complete};
 use crate::dtb;
 use crate::loader;
 use crate::memory;
@@ -413,11 +413,11 @@ fn configure_linux_hart(
     bus: &mut Bus,
     kernel_entry: u32,
     dtb_addr: u32,
-    use_tui: bool,
+    enable_tui: bool,
 ) {
     hart.pc = kernel_entry;
     hart.privilege = 1; // Linux 内核运行在 S-mode
-    if !use_tui {
+    if !enable_tui {
         bus.uart.enable_host_input();
     }
     hart.enable_sbi(true);
@@ -441,9 +441,14 @@ fn print_linux_boot_banner(artifacts: &LinuxArtifacts) {
     );
 }
 
-fn maybe_run_linux_tui(use_tui: bool, max_cycles: u64, hart: &mut Hart, bus: &mut Bus) -> bool {
+fn run_linux_tui_if_enabled(
+    enable_tui: bool,
+    max_cycles: u64,
+    hart: &mut Hart,
+    bus: &mut Bus,
+) -> bool {
     #[cfg(feature = "tui")]
-    if use_tui {
+    if enable_tui {
         bus.uart.enable_capture();
         let tui_cycles = resolve_tui_cycles(max_cycles, DEFAULT_LINUX_MAX_CYCLES);
         tui::run_tui_linux(hart, bus, tui_cycles);
@@ -451,7 +456,7 @@ fn maybe_run_linux_tui(use_tui: bool, max_cycles: u64, hart: &mut Hart, bus: &mu
     }
 
     #[cfg(not(feature = "tui"))]
-    if use_tui {
+    if enable_tui {
         let _ = (max_cycles, hart, bus);
         panic!("TUI 功能未编译，请使用 --features tui 重新构建");
     }
@@ -465,25 +470,18 @@ fn run_linux_headless(
     max_cycles: u64,
     kernel_path: &str,
     bootargs: &str,
-    mut debug: crate::DebugOptions,
+    debug: crate::DebugOptions,
 ) {
-    if let Err(e) = prepare_difftest_ref(
-        &mut debug,
-        &DifftestContext {
+    let mut debug_runtime = build_debug_runtime(
+        debug,
+        DifftestContext {
             mode: "linux",
             workload: kernel_path,
             kernel: Some(kernel_path),
             bootargs: Some(bootargs),
         },
-    ) {
-        panic!("{e}");
-    }
-
-    let mut debug_runtime = if debug.needs_step_snapshots() {
-        Some(DebugRuntime::new(debug).unwrap_or_else(|e| panic!("{e}")))
-    } else {
-        None
-    };
+    )
+    .unwrap_or_else(|e| panic!("{e}"));
 
     for cycle in 0..max_cycles {
         if let Some(runtime) = debug_runtime.as_mut() {
@@ -496,9 +494,7 @@ fn run_linux_headless(
             hart.step(bus);
         }
         if hart.shutdown_requested() {
-            if let Some(runtime) = debug_runtime.as_ref()
-                && let Err(e) = runtime.finalize()
-            {
+            if let Err(e) = ensure_debug_runtime_complete(debug_runtime.as_ref()) {
                 eprintln!("{e}");
                 std::process::exit(3);
             }
@@ -511,9 +507,7 @@ fn run_linux_headless(
         }
     }
 
-    if let Some(runtime) = debug_runtime.as_ref()
-        && let Err(e) = runtime.finalize()
-    {
+    if let Err(e) = ensure_debug_runtime_complete(debug_runtime.as_ref()) {
         eprintln!("{e}");
         std::process::exit(3);
     }
@@ -542,7 +536,7 @@ pub(crate) fn run_linux_mode(opts: LinuxOptions) {
     let mem = memory::Memory::new(MEM_SIZE);
     let mut bus = Bus::new(mem);
     let max_cycles = opts.max_cycles;
-    let use_tui = opts.tui;
+    let enable_tui = opts.tui;
     let debug = opts.debug.clone();
 
     let artifacts = prepare_linux_artifacts(&mut bus, opts);
@@ -552,11 +546,11 @@ pub(crate) fn run_linux_mode(opts: LinuxOptions) {
         &mut bus,
         artifacts.kernel_entry,
         artifacts.dtb_addr,
-        use_tui,
+        enable_tui,
     );
     print_linux_boot_banner(&artifacts);
 
-    if maybe_run_linux_tui(use_tui, max_cycles, &mut hart, &mut bus) {
+    if run_linux_tui_if_enabled(enable_tui, max_cycles, &mut hart, &mut bus) {
         return;
     }
 
