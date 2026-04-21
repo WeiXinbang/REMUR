@@ -104,6 +104,58 @@ const PTE_U: u32 = 1 << 4;
 const PTE_A: u32 = 1 << 6;
 const PTE_D: u32 = 1 << 7;
 
+// ── 内嵌 SBI 常量 ───────────────────────────────────────────
+const SBI_SUCCESS: i32 = 0;
+const SBI_ERR_NOT_SUPPORTED: i32 = -2;
+const SBI_CONSOLE_MMIO_ADDR: u32 = 0x1000_0000;
+
+const SBI_LEGACY_SET_TIMER_EID: u32 = 0x00;
+const SBI_LEGACY_CONSOLE_PUTCHAR_EID: u32 = 0x01;
+const SBI_LEGACY_CONSOLE_GETCHAR_EID: u32 = 0x02;
+const SBI_LEGACY_SHUTDOWN_EID: u32 = 0x08;
+const SBI_BASE_EID: u32 = 0x10;
+const SBI_DBCN_EID: u32 = 0x4442_434E;
+const SBI_TIME_EID: u32 = 0x5449_4D45;
+const SBI_SRST_EID: u32 = 0x5352_5354;
+
+const SBI_BASE_GET_SPEC_VERSION_FID: u32 = 0;
+const SBI_BASE_GET_IMPL_ID_FID: u32 = 1;
+const SBI_BASE_GET_IMPL_VERSION_FID: u32 = 2;
+const SBI_BASE_PROBE_EXTENSION_FID: u32 = 3;
+const SBI_BASE_GET_MVENDORID_FID: u32 = 4;
+const SBI_BASE_GET_MARCHID_FID: u32 = 5;
+const SBI_BASE_GET_MIMPID_FID: u32 = 6;
+
+const SBI_DBCN_CONSOLE_WRITE_FID: u32 = 0;
+const SBI_DBCN_CONSOLE_WRITE_BYTE_FID: u32 = 2;
+const SBI_TIME_SET_TIMER_FID: u32 = 0;
+const SBI_SRST_SYSTEM_RESET_FID: u32 = 0;
+
+#[derive(Clone, Copy, Debug)]
+struct SbiCall {
+    eid: u32,
+    fid: u32,
+    a0: u32,
+    a1: u32,
+    a2: u32,
+}
+
+impl SbiCall {
+    fn from_hart(hart: &Hart) -> Self {
+        Self {
+            eid: hart.read_reg(17),
+            fid: hart.read_reg(16),
+            a0: hart.read_reg(10),
+            a1: hart.read_reg(11),
+            a2: hart.read_reg(12),
+        }
+    }
+
+    fn a0_a1_u64(self) -> u64 {
+        ((self.a1 as u64) << 32) | (self.a0 as u64)
+    }
+}
+
 /// 内存访问类型（用于地址翻译）
 pub enum AccessType {
     Execute,
@@ -219,7 +271,11 @@ impl Hart {
         self.shutdown_requested
     }
 
-    fn sbi_set_timer(&mut self, bus: &mut Bus, deadline: u64) {
+    fn can_handle_sbi_ecall(&self) -> bool {
+        self.sbi_enabled && self.privilege == 1
+    }
+
+    fn program_sbi_timer(&mut self, bus: &mut Bus, deadline: u64) {
         self.sbi_timer_deadline = Some(deadline);
         bus.clint.mtimecmp = deadline;
         // set_timer 表示“重新编程下一次中断”，先清掉 STIP，后续由 update_mip 重新置位
@@ -233,102 +289,104 @@ impl Hart {
 
     fn sbi_probe_extension(ext: u32) -> u32 {
         match ext {
-            0x10 /* BASE */
-            | 0x4442_434E /* DBCN */
-            | 0x5449_4D45 /* TIME */
-            | 0x5352_5354 /* SRST */ => 1,
+            SBI_BASE_EID | SBI_DBCN_EID | SBI_TIME_EID | SBI_SRST_EID => 1,
             _ => 0,
+        }
+    }
+
+    fn handle_legacy_sbi_call(&mut self, bus: &mut Bus, call: SbiCall) {
+        match call.eid {
+            SBI_LEGACY_SET_TIMER_EID => {
+                self.program_sbi_timer(bus, call.a0_a1_u64());
+                self.write_reg(10, 0);
+            }
+            SBI_LEGACY_CONSOLE_PUTCHAR_EID => {
+                bus.write8(SBI_CONSOLE_MMIO_ADDR, call.a0 as u8);
+                self.write_reg(10, 0);
+            }
+            SBI_LEGACY_CONSOLE_GETCHAR_EID => {
+                self.write_reg(10, u32::MAX); // -1: no input
+            }
+            SBI_LEGACY_SHUTDOWN_EID => {
+                self.shutdown_requested = true;
+                self.write_reg(10, 0);
+            }
+            _ => unreachable!("legacy SBI handler only accepts legacy EIDs"),
+        }
+    }
+
+    fn handle_sbi_base_extension(&mut self, call: SbiCall) {
+        match call.fid {
+            SBI_BASE_GET_SPEC_VERSION_FID => self.sbi_set_result(SBI_SUCCESS, 0x0000_0002),
+            SBI_BASE_GET_IMPL_ID_FID => self.sbi_set_result(SBI_SUCCESS, 0x5245_4D55),
+            SBI_BASE_GET_IMPL_VERSION_FID => self.sbi_set_result(SBI_SUCCESS, 0x0000_0001),
+            SBI_BASE_PROBE_EXTENSION_FID => {
+                self.sbi_set_result(SBI_SUCCESS, Self::sbi_probe_extension(call.a0))
+            }
+            SBI_BASE_GET_MVENDORID_FID => self.sbi_set_result(SBI_SUCCESS, self.read_csr(0xF11)),
+            SBI_BASE_GET_MARCHID_FID => self.sbi_set_result(SBI_SUCCESS, self.read_csr(0xF12)),
+            SBI_BASE_GET_MIMPID_FID => self.sbi_set_result(SBI_SUCCESS, self.read_csr(0xF13)),
+            _ => self.sbi_set_result(SBI_ERR_NOT_SUPPORTED, 0),
+        }
+    }
+
+    fn handle_sbi_dbcn_extension(&mut self, bus: &mut Bus, call: SbiCall) {
+        match call.fid {
+            SBI_DBCN_CONSOLE_WRITE_FID => {
+                if call.a2 != 0 {
+                    self.sbi_set_result(SBI_ERR_NOT_SUPPORTED, 0);
+                } else {
+                    for i in 0..call.a0 {
+                        let ch = bus.read8(call.a1.wrapping_add(i));
+                        bus.write8(SBI_CONSOLE_MMIO_ADDR, ch);
+                    }
+                    self.sbi_set_result(SBI_SUCCESS, call.a0);
+                }
+            }
+            SBI_DBCN_CONSOLE_WRITE_BYTE_FID => {
+                bus.write8(SBI_CONSOLE_MMIO_ADDR, call.a0 as u8);
+                self.sbi_set_result(SBI_SUCCESS, 0);
+            }
+            _ => self.sbi_set_result(SBI_ERR_NOT_SUPPORTED, 0),
+        }
+    }
+
+    fn handle_sbi_time_extension(&mut self, bus: &mut Bus, call: SbiCall) {
+        if call.fid == SBI_TIME_SET_TIMER_FID {
+            self.program_sbi_timer(bus, call.a0_a1_u64());
+            self.sbi_set_result(SBI_SUCCESS, 0);
+        } else {
+            self.sbi_set_result(SBI_ERR_NOT_SUPPORTED, 0);
+        }
+    }
+
+    fn handle_sbi_reset_extension(&mut self, call: SbiCall) {
+        if call.fid == SBI_SRST_SYSTEM_RESET_FID {
+            self.shutdown_requested = true;
+            self.sbi_set_result(SBI_SUCCESS, 0);
+        } else {
+            self.sbi_set_result(SBI_ERR_NOT_SUPPORTED, 0);
         }
     }
 
     /// 在 S-mode 拦截并处理 SBI ecall。
     /// 返回 true 表示该 ecall 已由内嵌 SBI 消化，不需要再走 trap 机制。
     pub fn handle_sbi_ecall(&mut self, bus: &mut Bus) -> bool {
-        if !self.sbi_enabled || self.privilege != 1 {
+        if !self.can_handle_sbi_ecall() {
             return false;
         }
 
-        const SBI_SUCCESS: i32 = 0;
-        const SBI_ERR_NOT_SUPPORTED: i32 = -2;
+        let call = SbiCall::from_hart(self);
 
-        let eid = self.read_reg(17); // a7
-        let fid = self.read_reg(16); // a6
-        let a0 = self.read_reg(10);
-        let a1 = self.read_reg(11);
-        let a2 = self.read_reg(12);
-
-        match eid {
-            // SBI v0.1 legacy set_timer(stime_value)
-            0x00 => {
-                let deadline = ((a1 as u64) << 32) | (a0 as u64);
-                self.sbi_set_timer(bus, deadline);
-                self.write_reg(10, 0);
-            }
-            // SBI v0.1 legacy console_putchar(ch)
-            0x01 => {
-                bus.write8(0x1000_0000, a0 as u8);
-                self.write_reg(10, 0);
-            }
-            // SBI v0.1 legacy console_getchar()
-            0x02 => {
-                self.write_reg(10, u32::MAX); // -1: no input
-            }
-            // SBI v0.1 legacy shutdown()
-            0x08 => {
-                self.shutdown_requested = true;
-                self.write_reg(10, 0);
-            }
-            // SBI Base extension
-            0x10 => match fid {
-                0 => self.sbi_set_result(SBI_SUCCESS, 0x0000_0002), // spec version 0.2
-                1 => self.sbi_set_result(SBI_SUCCESS, 0x5245_4D55), // impl id: "REMU"
-                2 => self.sbi_set_result(SBI_SUCCESS, 0x0000_0001), // impl version
-                3 => self.sbi_set_result(SBI_SUCCESS, Self::sbi_probe_extension(a0)),
-                4 => self.sbi_set_result(SBI_SUCCESS, self.read_csr(0xF11)), // mvendorid
-                5 => self.sbi_set_result(SBI_SUCCESS, self.read_csr(0xF12)), // marchid
-                6 => self.sbi_set_result(SBI_SUCCESS, self.read_csr(0xF13)), // mimpid
-                _ => self.sbi_set_result(SBI_ERR_NOT_SUPPORTED, 0),
-            },
-            // SBI Debug Console extension
-            0x4442_434E => match fid {
-                // console_write(num_bytes, base_addr_lo, base_addr_hi)
-                0 => {
-                    if a2 != 0 {
-                        self.sbi_set_result(SBI_ERR_NOT_SUPPORTED, 0);
-                    } else {
-                        for i in 0..a0 {
-                            let ch = bus.read8(a1.wrapping_add(i));
-                            bus.write8(0x1000_0000, ch);
-                        }
-                        self.sbi_set_result(SBI_SUCCESS, a0);
-                    }
-                }
-                // console_write_byte(byte)
-                2 => {
-                    bus.write8(0x1000_0000, a0 as u8);
-                    self.sbi_set_result(SBI_SUCCESS, 0);
-                }
-                _ => self.sbi_set_result(SBI_ERR_NOT_SUPPORTED, 0),
-            },
-            // SBI TIME extension: set_timer(stime_value)
-            0x5449_4D45 => {
-                if fid == 0 {
-                    let deadline = ((a1 as u64) << 32) | (a0 as u64);
-                    self.sbi_set_timer(bus, deadline);
-                    self.sbi_set_result(SBI_SUCCESS, 0);
-                } else {
-                    self.sbi_set_result(SBI_ERR_NOT_SUPPORTED, 0);
-                }
-            }
-            // SBI SRST extension: system_reset(reset_type, reset_reason)
-            0x5352_5354 => {
-                if fid == 0 {
-                    self.shutdown_requested = true;
-                    self.sbi_set_result(SBI_SUCCESS, 0);
-                } else {
-                    self.sbi_set_result(SBI_ERR_NOT_SUPPORTED, 0);
-                }
-            }
+        match call.eid {
+            SBI_LEGACY_SET_TIMER_EID
+            | SBI_LEGACY_CONSOLE_PUTCHAR_EID
+            | SBI_LEGACY_CONSOLE_GETCHAR_EID
+            | SBI_LEGACY_SHUTDOWN_EID => self.handle_legacy_sbi_call(bus, call),
+            SBI_BASE_EID => self.handle_sbi_base_extension(call),
+            SBI_DBCN_EID => self.handle_sbi_dbcn_extension(bus, call),
+            SBI_TIME_EID => self.handle_sbi_time_extension(bus, call),
+            SBI_SRST_EID => self.handle_sbi_reset_extension(call),
             _ => self.sbi_set_result(SBI_ERR_NOT_SUPPORTED, 0),
         }
 
@@ -823,5 +881,78 @@ impl Hart {
             }
         }
         None
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::memory::Memory;
+
+    fn new_sbi_context() -> (Hart, Bus) {
+        let mut hart = Hart::new();
+        hart.privilege = 1;
+        hart.enable_sbi(true);
+        let bus = Bus::new(Memory::new(1024 * 1024));
+        (hart, bus)
+    }
+
+    #[test]
+    fn sbi_ecall_requires_enabled_s_mode() {
+        let mut hart = Hart::new();
+        let mut bus = Bus::new(Memory::new(1024 * 1024));
+        hart.write_reg(17, SBI_LEGACY_SHUTDOWN_EID);
+
+        assert!(!hart.handle_sbi_ecall(&mut bus));
+
+        hart.enable_sbi(true);
+        assert!(!hart.handle_sbi_ecall(&mut bus));
+
+        hart.privilege = 1;
+        assert!(hart.handle_sbi_ecall(&mut bus));
+        assert!(hart.shutdown_requested());
+    }
+
+    #[test]
+    fn sbi_reset_extension_sets_shutdown_and_success_result() {
+        let (mut hart, mut bus) = new_sbi_context();
+        hart.write_reg(16, SBI_SRST_SYSTEM_RESET_FID);
+        hart.write_reg(17, SBI_SRST_EID);
+
+        assert!(hart.handle_sbi_ecall(&mut bus));
+        assert!(hart.shutdown_requested());
+        assert_eq!(hart.read_reg(10), SBI_SUCCESS as u32);
+        assert_eq!(hart.read_reg(11), 0);
+    }
+
+    #[test]
+    fn sbi_dbcn_console_write_rejects_nonzero_high_address() {
+        let (mut hart, mut bus) = new_sbi_context();
+        bus.uart.enable_capture();
+        hart.write_reg(10, 4);
+        hart.write_reg(11, 0x8000_1000);
+        hart.write_reg(12, 1);
+        hart.write_reg(16, SBI_DBCN_CONSOLE_WRITE_FID);
+        hart.write_reg(17, SBI_DBCN_EID);
+
+        assert!(hart.handle_sbi_ecall(&mut bus));
+        assert_eq!(hart.read_reg(10), SBI_ERR_NOT_SUPPORTED as u32);
+        assert_eq!(hart.read_reg(11), 0);
+        assert_eq!(bus.uart.pop_output(), None);
+    }
+
+    #[test]
+    fn update_mip_sets_stip_after_sbi_timer_deadline() {
+        let mut hart = Hart::new();
+        let mut bus = Bus::new(Memory::new(1024 * 1024));
+        hart.sbi_timer_deadline = Some(5);
+
+        bus.clint.mtime = 4;
+        hart.update_mip(&mut bus);
+        assert_eq!(hart.read_csr(MIP) & MIP_STIP, 0);
+
+        bus.clint.mtime = 5;
+        hart.update_mip(&mut bus);
+        assert_eq!(hart.read_csr(MIP) & MIP_STIP, MIP_STIP);
     }
 }
