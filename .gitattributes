@@ -1,2 +1,5 @@
 # Auto detect text files and perform LF normalization
 * text=auto
+
+# Shell scripts must keep LF endings (bash in WSL/Linux can't handle CRLF)
+*.sh text eol=lf

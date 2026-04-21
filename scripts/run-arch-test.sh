@@ -19,16 +19,19 @@ ARCH_TEST_DIR="$PROJECT_DIR/riscv-arch-test"
 REMUR_CONFIG_DIR="$PROJECT_DIR/config/remur"
 SKIP_BUILD=false
 CLEAN=false
+USE_RELEASE=false
 
 # 解析参数
 for arg in "$@"; do
     case $arg in
         --skip-build) SKIP_BUILD=true ;;
         --clean) CLEAN=true ;;
+        --release) USE_RELEASE=true ;;
         -h|--help)
-            echo "Usage: $0 [--skip-build] [--clean]"
+            echo "Usage: $0 [--skip-build] [--clean] [--release]"
             echo "  --skip-build  Skip building REMUR (use existing binary)"
             echo "  --clean       Clean riscv-arch-test work directory before running"
+            echo "  --release     Build and use release binary (default: debug)"
             exit 0
             ;;
     esac
@@ -41,16 +44,31 @@ echo "════════════════════════�
 # ── Step 1: 编译 REMUR ──────────────────────────
 if [ "$SKIP_BUILD" = false ]; then
     echo ""
-    echo "▶ Step 1: Building REMUR (release)..."
-    cd "$PROJECT_DIR"
-    cargo build --release --quiet
-    echo "  ✅ Build complete"
+    if [ "$USE_RELEASE" = true ]; then
+        echo "▶ Step 1: Building REMUR (release)..."
+        cd "$PROJECT_DIR"
+        cargo build --release --quiet
+        echo "  ✅ Build complete (release)"
+    else
+        echo "▶ Step 1: Building REMUR (debug)..."
+        cd "$PROJECT_DIR"
+        cargo build --quiet
+        echo "  ✅ Build complete (debug)"
+    fi
 else
     echo ""
     echo "▶ Step 1: Skipped (--skip-build)"
 fi
 
-REMUR_BIN="$PROJECT_DIR/target/release/remur"
+if [ "$USE_RELEASE" = true ]; then
+    REMUR_BIN="$PROJECT_DIR/target/release/remur"
+else
+    REMUR_BIN="$PROJECT_DIR/target/debug/remur"
+fi
+# Windows 上通过 WSL 运行时，二进制是 .exe
+if [ ! -f "$REMUR_BIN" ] && [ -f "${REMUR_BIN}.exe" ]; then
+    REMUR_BIN="${REMUR_BIN}.exe"
+fi
 if [ ! -f "$REMUR_BIN" ]; then
     echo "  ❌ REMUR binary not found at $REMUR_BIN"
     echo "     Run without --skip-build first."
@@ -87,7 +105,7 @@ if [ "$CLEAN" = true ]; then
     echo "  ✅ Cleaned"
 fi
 
-# ── Step 5: 检查依赖 ──────────────────────────────
+# ── Step 5: 检查 & 安装依赖 ─────────────────────
 echo ""
 echo "▶ Step 5: Checking dependencies..."
 MISSING=""
@@ -95,14 +113,25 @@ command -v riscv64-unknown-elf-gcc >/dev/null 2>&1 || MISSING="$MISSING riscv64-
 command -v python3 >/dev/null 2>&1 || MISSING="$MISSING python3"
 
 if [ -n "$MISSING" ]; then
-    echo "  ❌ Missing tools:$MISSING"
-    echo ""
-    echo "  Install guide:"
-    echo "    riscv64-unknown-elf-gcc: sudo apt install gcc-riscv64-unknown-elf"
-    echo "    python3: sudo apt install python3 python3-pip"
+    echo "  ❌ Missing:$MISSING"
+    echo "  Install: sudo apt install gcc-riscv64-unknown-elf python3"
     exit 1
 fi
-echo "  ✅ All dependencies found"
+echo "  ✅ gcc + python3 found"
+
+# uv 或 mise（riscv-arch-test 的 Python 依赖管理）— 可自动装
+if ! command -v uv >/dev/null 2>&1 && ! command -v mise >/dev/null 2>&1; then
+    echo "  ⚠ Neither uv nor mise found — installing uv..."
+    curl -LsSf https://astral.sh/uv/install.sh | sh 2>/dev/null
+    export PATH="$HOME/.local/bin:$HOME/.cargo/bin:$PATH"
+    if ! command -v uv >/dev/null 2>&1; then
+        echo "  ❌ uv install failed. Install manually: curl -LsSf https://astral.sh/uv/install.sh | sh"
+        exit 1
+    fi
+    echo "  ✅ uv installed"
+else
+    echo "  ✅ uv/mise found"
+fi
 
 # ── Step 6: 生成测试 + 编译 ELF ──────────────────
 echo ""
