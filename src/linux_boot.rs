@@ -13,6 +13,7 @@ use std::process::Command;
 
 use crate::bus::{self, Bus};
 use crate::cpu::{self, Hart};
+use crate::debug_trace::{DebugRuntime, DifftestContext, prepare_difftest_ref};
 use crate::dtb;
 use crate::loader;
 use crate::memory;
@@ -20,8 +21,8 @@ use crate::memory;
 use crate::tui;
 use crate::{
     COUNTER_EN_TM_IR, DEFAULT_DTB_ADDR, DEFAULT_INITRAMFS_ADDR, DEFAULT_KERNEL_ADDR,
-    DEFAULT_LINUX_BOOTARGS, DEFAULT_LINUX_MAX_CYCLES, DELEGATE_EXCEPTIONS_TO_S, DebugRuntime,
-    DifftestContext, LinuxOptions, MEM_SIZE, prepare_difftest_ref, resolve_tui_cycles,
+    DEFAULT_LINUX_BOOTARGS, DEFAULT_LINUX_MAX_CYCLES, DELEGATE_EXCEPTIONS_TO_S, LinuxOptions,
+    MEM_SIZE, resolve_tui_cycles,
 };
 
 const PREBUILT_RELEASES_URL: &str =
