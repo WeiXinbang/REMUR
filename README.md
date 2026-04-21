@@ -66,21 +66,41 @@ cargo run linux --kernel-addr 0x80400000 --bootargs "earlycon=uart8250,mmio,0x10
 
 ```text
 普通模式:
+<<<<<<< Updated upstream
   remur <binary_or_elf> [--tohost <hex>] [--signature <file>] [--cycles <n>]
         [--itrace] [--itrace-file <file>] [--itrace-limit <n>] [--difftest-ref <file>]
         [--difftest-ref-cmd <cmd>] [--difftest-ref-out <file>]
+=======
+  remur <binary_or_elf> [--tohost <hex>] [--signature <file>] [--cycles <n>] [--no-limit]
+        [--tui] [--itrace] [--itrace-file <file>] [--itrace-limit <n>]
+        [--difftest-ref <file>] [--difftest-ref-cmd <cmd>] [--difftest-ref-out <file>]
+>>>>>>> Stashed changes
 
 Linux 模式:
   remur linux [--kernel <image_or_elf>] [--dtb <file>] [--initramfs <file>]
         [--kernel-addr <hex>] [--dtb-addr <hex>] [--initramfs-addr <hex>]
+<<<<<<< Updated upstream
         [--bootargs <string>] [--cycles <n>]
         [--itrace] [--itrace-file <file>] [--itrace-limit <n>] [--difftest-ref <file>]
         [--difftest-ref-cmd <cmd>] [--difftest-ref-out <file>]
+=======
+        [--bootargs <string>] [--cycles <n>] [--no-limit] [--tui]
+        [--itrace] [--itrace-file <file>] [--itrace-limit <n>]
+        [--difftest-ref <file>] [--difftest-ref-cmd <cmd>] [--difftest-ref-out <file>]
+>>>>>>> Stashed changes
 
 Linux 模式（兼容）:
   remur --linux --kernel <image_or_elf> [--dtb <file>] [--initramfs <file>]
         [--kernel-addr <hex>] [--dtb-addr <hex>] [--initramfs-addr <hex>]
+<<<<<<< Updated upstream
         [--bootargs <string>] [--cycles <n>]
+=======
+        [--bootargs <string>] [--cycles <n>] [--no-limit]
+
+TUI 仪表盘（需要 --features tui 编译）:
+  remur linux --tui              # Linux 模式 TUI
+  remur test.elf --tui           # 普通模式 TUI
+>>>>>>> Stashed changes
 ```
 
 也可以用脚本：
@@ -105,16 +125,47 @@ cargo arch-test
 
 ### M5 架构测试怎么用（riscv-arch-test）
 
+<<<<<<< Updated upstream
 - `cargo test`：默认只跑仓库内快速/常规测试，不包含 arch framework。
 - `cargo arch-test`：运行 `tests/arch_framework.rs`（`#[ignore]`）触发官方框架流程。
 - 环境要求：Linux/WSL + `riscv64-unknown-elf-*` 交叉工具链 + Python 依赖（由 `scripts/run-arch-test.sh` 使用）。
 - 结论：配置已接好，命令入口也已接好；是否能完整跑完取决于本机 Linux/WSL 工具链环境。
+=======
+展示 CPU 寄存器、CSR、UART 输出的终端仪表盘，适合视频演示：
+
+```bash
+# 构建时启用 TUI feature
+cargo build --release --features tui
+
+# Linux 模式 TUI
+cargo run --features tui -- linux --tui
+
+# 普通模式 TUI
+cargo run --features tui -- tests/bins/rv32ui-p-add.elf --tui
+```
+
+常用操作：
+
+- `Space`：暂停 / 继续
+- `F1`：切换控制模式 / 输入模式
+- `n` / `N` / `m` / `M`：暂停时单步执行 1 / 10 / 100 / 1000 条指令
+- 输入模式下键盘直接发到 UART，`Ctrl+C` 会转发给 Linux；要退出 TUI 先按 `F1` 或 `Esc` 回控制模式
+
+### M5 架构测试（riscv-arch-test）
+
+- `cargo test` 会自动运行 arch-test 合规测试（含 clone 仓库 + 编译 ELF + 签名对比）。
+- 环境要求：WSL + `riscv64-unknown-elf-*` 交叉工具链 + Python 3。
+- 也可单独运行：`cargo arch-test`。
+>>>>>>> Stashed changes
 
 ### M6 Linux 启动现状（含 ls 说明）
 
 - `cargo run linux`（零配置）会自动下载并缓存预构建 `Image/rootfs`，默认用 4MiB 对齐地址启动（`0x80400000`）。
 - 默认 bootargs 会进入 `rdinit=/bin/sh`，可直接在串口里输入 `ls`。
 - 当前可看到 BusyBox shell 提示符并执行命令（会提示 `can't access tty; job control turned off`，但不影响 `ls`/`echo` 等基本交互）。
+- 直接进 shell 时通常还没挂载 procfs；需要手动执行 `mount -t proc proc /proc`。
+- 若在 shell 里执行关机，推荐用 `poweroff -f`，这样会直接走 SBI shutdown 路径并让 TUI 停在 `SBI shutdown` 状态。
+- 若命令行里退格只移动光标、不擦除字符，可先执行 `export TERM=vt100`。
 
 ### M7 / M8 是否现在开做
 
