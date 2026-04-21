@@ -26,6 +26,8 @@ const DEFAULT_LINUX_MAX_CYCLES: u64 = 200_000_000;
 const DEFAULT_KERNEL_ADDR: u32 = 0x8020_0000;
 const DEFAULT_DTB_ADDR: u32 = 0x8200_0000;
 const DEFAULT_INITRAMFS_ADDR: u32 = 0x8300_0000;
+const DEFAULT_LINUX_BOOTARGS: &str =
+    "earlycon=uart8250,mmio,0x10000000 console=ttyS0 rdinit=/bin/sh";
 const COUNTER_EN_TM_IR: u32 = (1 << 0) | (1 << 1) | (1 << 2);
 const DELEGATE_EXCEPTIONS_TO_S: u32 = (1 << 0) |  // instruction address misaligned
     (1 << 1) |  // instruction access fault
@@ -143,173 +145,177 @@ fn take_next(args: &[String], i: &mut usize, name: &str) -> String {
     args[*i].clone()
 }
 
+fn parse_u64_arg(args: &[String], i: &mut usize, name: &str) -> u64 {
+    let value = take_next(args, i, name);
+    value
+        .parse::<u64>()
+        .unwrap_or_else(|_| panic!("Invalid {}: {}", name, value))
+}
+
+/// 解析普通模式 / Linux 模式共享的运行时开关。
+fn parse_common_run_option(
+    arg: &str,
+    args: &[String],
+    i: &mut usize,
+    max_cycles: &mut u64,
+    debug: &mut DebugOptions,
+    use_tui: &mut bool,
+) -> bool {
+    match arg {
+        "--tui" => *use_tui = true,
+        "--cycles" => *max_cycles = parse_u64_arg(args, i, "--cycles"),
+        "--no-limit" => *max_cycles = u64::MAX,
+        "--itrace" => debug.itrace = true,
+        "--itrace-file" => debug.itrace_file = Some(take_next(args, i, "--itrace-file")),
+        "--itrace-limit" => debug.itrace_limit = Some(parse_u64_arg(args, i, "--itrace-limit")),
+        "--difftest-ref" => debug.difftest_ref = Some(take_next(args, i, "--difftest-ref")),
+        "--difftest-ref-cmd" => {
+            debug.difftest_ref_cmd = Some(take_next(args, i, "--difftest-ref-cmd"))
+        }
+        "--difftest-ref-out" => {
+            debug.difftest_ref_out = Some(take_next(args, i, "--difftest-ref-out"))
+        }
+        _ => return false,
+    }
+    true
+}
+
+fn is_linux_mode(args: &[String]) -> bool {
+    args.iter().any(|a| a == "--linux") || args.get(1).is_some_and(|a| a == "linux")
+}
+
+/// Linux 模式在独有选项之上，复用共享运行时开关解析。
+fn parse_linux_options(args: &[String]) -> LinuxOptions {
+    let mut kernel_file: Option<String> = None;
+    let mut dtb_file: Option<String> = None;
+    let mut initramfs_file: Option<String> = None;
+    let mut kernel_addr = DEFAULT_KERNEL_ADDR;
+    let mut dtb_addr = DEFAULT_DTB_ADDR;
+    let mut initramfs_addr = DEFAULT_INITRAMFS_ADDR;
+    let mut bootargs = DEFAULT_LINUX_BOOTARGS.to_string();
+    let mut max_cycles = DEFAULT_LINUX_MAX_CYCLES;
+    let mut debug = DebugOptions::default();
+    let mut use_tui = false;
+
+    let mut i = 1usize;
+    while i < args.len() {
+        let arg = args[i].as_str();
+        if parse_common_run_option(arg, args, &mut i, &mut max_cycles, &mut debug, &mut use_tui) {
+            i += 1;
+            continue;
+        }
+
+        match arg {
+            "linux" if i == 1 => {}
+            "--linux" => {}
+            "--kernel" => kernel_file = Some(take_next(args, &mut i, "--kernel")),
+            "--dtb" => dtb_file = Some(take_next(args, &mut i, "--dtb")),
+            "--initramfs" => initramfs_file = Some(take_next(args, &mut i, "--initramfs")),
+            "--kernel-addr" => {
+                let value = take_next(args, &mut i, "--kernel-addr");
+                kernel_addr = parse_u32_addr(&value, "--kernel-addr");
+            }
+            "--dtb-addr" => {
+                let value = take_next(args, &mut i, "--dtb-addr");
+                dtb_addr = parse_u32_addr(&value, "--dtb-addr");
+            }
+            "--initramfs-addr" => {
+                let value = take_next(args, &mut i, "--initramfs-addr");
+                initramfs_addr = parse_u32_addr(&value, "--initramfs-addr");
+            }
+            "--bootargs" => bootargs = take_next(args, &mut i, "--bootargs"),
+            other if other.starts_with("--") => panic!("Unknown option in linux mode: {}", other),
+            other => {
+                if kernel_file.is_none() {
+                    kernel_file = Some(other.to_string());
+                } else {
+                    panic!("Unexpected positional argument: {}", other);
+                }
+            }
+        }
+        i += 1;
+    }
+
+    LinuxOptions {
+        kernel_file,
+        dtb_file,
+        initramfs_file,
+        kernel_addr,
+        dtb_addr,
+        initramfs_addr,
+        bootargs,
+        max_cycles,
+        debug,
+        tui: use_tui,
+    }
+}
+
+/// 普通模式和 Linux 模式共享调试/TUI 相关开关，只保留 workload 特有部分。
+fn parse_normal_options(args: &[String]) -> NormalOptions {
+    let mut input_file: Option<String> = None;
+    let mut tohost_override: Option<u32> = None;
+    let mut signature_file: Option<String> = None;
+    let mut max_cycles = DEFAULT_MAX_CYCLES;
+    let mut debug = DebugOptions::default();
+    let mut use_tui = false;
+
+    let mut i = 1usize;
+    while i < args.len() {
+        let arg = args[i].as_str();
+        if parse_common_run_option(arg, args, &mut i, &mut max_cycles, &mut debug, &mut use_tui) {
+            i += 1;
+            continue;
+        }
+
+        match arg {
+            "--tohost" => {
+                let value = take_next(args, &mut i, "--tohost");
+                tohost_override = Some(parse_u32_addr(&value, "--tohost"));
+            }
+            "--signature" => signature_file = Some(take_next(args, &mut i, "--signature")),
+            "--linux" => panic!("Use --linux with --kernel for Linux boot mode"),
+            other if other.starts_with("--") => panic!("Unknown option: {}", other),
+            other => {
+                if input_file.is_none() {
+                    input_file = Some(other.to_string());
+                } else if tohost_override.is_none() {
+                    // 向后兼容：第二个位置参数作为 tohost 地址
+                    tohost_override = Some(parse_u32_addr(other, "tohost"));
+                } else {
+                    panic!("Unexpected positional argument: {}", other);
+                }
+            }
+        }
+        i += 1;
+    }
+
+    NormalOptions {
+        input_file: input_file.unwrap_or_else(|| usage_and_exit()),
+        tohost_override,
+        signature_file,
+        max_cycles,
+        debug,
+        tui: use_tui,
+    }
+}
+
 fn parse_mode(args: &[String]) -> Mode {
     if args.len() < 2 {
         usage_and_exit();
     }
 
-    let linux_mode =
-        args.iter().any(|a| a == "--linux") || args.get(1).is_some_and(|a| a == "linux");
-
-    if linux_mode {
-        let mut kernel_file: Option<String> = None;
-        let mut dtb_file: Option<String> = None;
-        let mut initramfs_file: Option<String> = None;
-        let mut kernel_addr = DEFAULT_KERNEL_ADDR;
-        let mut dtb_addr = DEFAULT_DTB_ADDR;
-        let mut initramfs_addr = DEFAULT_INITRAMFS_ADDR;
-        let mut bootargs =
-            "earlycon=uart8250,mmio,0x10000000 console=ttyS0 rdinit=/bin/sh".to_string();
-        let mut max_cycles = DEFAULT_LINUX_MAX_CYCLES;
-        let mut debug = DebugOptions::default();
-        let mut use_tui = false;
-
-        let mut i = 1usize;
-        while i < args.len() {
-            match args[i].as_str() {
-                "linux" if i == 1 => {}
-                "--linux" => {}
-                "--tui" => use_tui = true,
-                "--kernel" => kernel_file = Some(take_next(args, &mut i, "--kernel")),
-                "--dtb" => dtb_file = Some(take_next(args, &mut i, "--dtb")),
-                "--initramfs" => initramfs_file = Some(take_next(args, &mut i, "--initramfs")),
-                "--kernel-addr" => {
-                    let v = take_next(args, &mut i, "--kernel-addr");
-                    kernel_addr = parse_u32_addr(&v, "--kernel-addr");
-                }
-                "--dtb-addr" => {
-                    let v = take_next(args, &mut i, "--dtb-addr");
-                    dtb_addr = parse_u32_addr(&v, "--dtb-addr");
-                }
-                "--initramfs-addr" => {
-                    let v = take_next(args, &mut i, "--initramfs-addr");
-                    initramfs_addr = parse_u32_addr(&v, "--initramfs-addr");
-                }
-                "--bootargs" => bootargs = take_next(args, &mut i, "--bootargs"),
-                "--cycles" => {
-                    let v = take_next(args, &mut i, "--cycles");
-                    max_cycles = v
-                        .parse::<u64>()
-                        .unwrap_or_else(|_| panic!("Invalid --cycles: {}", v));
-                }
-                "--no-limit" => max_cycles = u64::MAX,
-                "--itrace" => debug.itrace = true,
-                "--itrace-file" => {
-                    debug.itrace_file = Some(take_next(args, &mut i, "--itrace-file"))
-                }
-                "--itrace-limit" => {
-                    let v = take_next(args, &mut i, "--itrace-limit");
-                    debug.itrace_limit = Some(
-                        v.parse::<u64>()
-                            .unwrap_or_else(|_| panic!("Invalid --itrace-limit: {}", v)),
-                    );
-                }
-                "--difftest-ref" => {
-                    debug.difftest_ref = Some(take_next(args, &mut i, "--difftest-ref"))
-                }
-                "--difftest-ref-cmd" => {
-                    debug.difftest_ref_cmd = Some(take_next(args, &mut i, "--difftest-ref-cmd"))
-                }
-                "--difftest-ref-out" => {
-                    debug.difftest_ref_out = Some(take_next(args, &mut i, "--difftest-ref-out"))
-                }
-                other if other.starts_with("--") => {
-                    panic!("Unknown option in linux mode: {}", other)
-                }
-                other => {
-                    if kernel_file.is_none() {
-                        kernel_file = Some(other.to_string());
-                    } else {
-                        panic!("Unexpected positional argument: {}", other);
-                    }
-                }
-            }
-            i += 1;
-        }
-
-        Mode::Linux(LinuxOptions {
-            kernel_file,
-            dtb_file,
-            initramfs_file,
-            kernel_addr,
-            dtb_addr,
-            initramfs_addr,
-            bootargs,
-            max_cycles,
-            debug,
-            tui: use_tui,
-        })
+    if is_linux_mode(args) {
+        Mode::Linux(parse_linux_options(args))
     } else {
-        let mut input_file: Option<String> = None;
-        let mut tohost_override: Option<u32> = None;
-        let mut signature_file: Option<String> = None;
-        let mut max_cycles = DEFAULT_MAX_CYCLES;
-        let mut debug = DebugOptions::default();
-        let mut use_tui = false;
+        Mode::Normal(parse_normal_options(args))
+    }
+}
 
-        let mut i = 1usize;
-        while i < args.len() {
-            match args[i].as_str() {
-                "--tui" => use_tui = true,
-                "--tohost" => {
-                    let v = take_next(args, &mut i, "--tohost");
-                    tohost_override = Some(parse_u32_addr(&v, "--tohost"));
-                }
-                "--signature" => {
-                    signature_file = Some(take_next(args, &mut i, "--signature"));
-                }
-                "--cycles" => {
-                    let v = take_next(args, &mut i, "--cycles");
-                    max_cycles = v
-                        .parse::<u64>()
-                        .unwrap_or_else(|_| panic!("Invalid --cycles: {}", v));
-                }
-                "--no-limit" => max_cycles = u64::MAX,
-                "--itrace" => debug.itrace = true,
-                "--itrace-file" => {
-                    debug.itrace_file = Some(take_next(args, &mut i, "--itrace-file"))
-                }
-                "--itrace-limit" => {
-                    let v = take_next(args, &mut i, "--itrace-limit");
-                    debug.itrace_limit = Some(
-                        v.parse::<u64>()
-                            .unwrap_or_else(|_| panic!("Invalid --itrace-limit: {}", v)),
-                    );
-                }
-                "--difftest-ref" => {
-                    debug.difftest_ref = Some(take_next(args, &mut i, "--difftest-ref"))
-                }
-                "--difftest-ref-cmd" => {
-                    debug.difftest_ref_cmd = Some(take_next(args, &mut i, "--difftest-ref-cmd"))
-                }
-                "--difftest-ref-out" => {
-                    debug.difftest_ref_out = Some(take_next(args, &mut i, "--difftest-ref-out"))
-                }
-                "--linux" => panic!("Use --linux with --kernel for Linux boot mode"),
-                other if other.starts_with("--") => panic!("Unknown option: {}", other),
-                other => {
-                    if input_file.is_none() {
-                        input_file = Some(other.to_string());
-                    } else if tohost_override.is_none() {
-                        // 向后兼容：第二个位置参数作为 tohost 地址
-                        tohost_override = Some(parse_u32_addr(other, "tohost"));
-                    } else {
-                        panic!("Unexpected positional argument: {}", other);
-                    }
-                }
-            }
-            i += 1;
-        }
-
-        let input_file = input_file.unwrap_or_else(|| usage_and_exit());
-        Mode::Normal(NormalOptions {
-            input_file,
-            tohost_override,
-            signature_file,
-            max_cycles,
-            debug,
-            tui: use_tui,
-        })
+fn resolve_tui_cycles(max_cycles: u64, default_cycles: u64) -> u64 {
+    if max_cycles == default_cycles {
+        u64::MAX
+    } else {
+        max_cycles
     }
 }
 
@@ -743,11 +749,7 @@ fn run_normal_mode(opts: NormalOptions) {
     if opts.tui {
         bus.uart.enable_capture();
         // TUI 模式默认无限制（用户可手动退出）
-        let tui_cycles = if opts.max_cycles == DEFAULT_MAX_CYCLES {
-            u64::MAX
-        } else {
-            opts.max_cycles
-        };
+        let tui_cycles = resolve_tui_cycles(opts.max_cycles, DEFAULT_MAX_CYCLES);
         tui::run_tui_normal(&mut hart, &mut bus, tui_cycles);
         return;
     }
@@ -1122,11 +1124,7 @@ fn run_linux_mode(opts: LinuxOptions) {
     if use_tui {
         bus.uart.enable_capture();
         // TUI 模式默认无限制（用户可手动退出）
-        let tui_cycles = if max_cycles == DEFAULT_LINUX_MAX_CYCLES {
-            u64::MAX
-        } else {
-            max_cycles
-        };
+        let tui_cycles = resolve_tui_cycles(max_cycles, DEFAULT_LINUX_MAX_CYCLES);
         tui::run_tui_linux(&mut hart, &mut bus, tui_cycles);
         return;
     }

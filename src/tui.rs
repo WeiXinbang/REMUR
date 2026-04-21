@@ -315,6 +315,240 @@ fn finish_normal_from_tohost(state: &mut TuiState, val: u32) {
     }
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum TuiMode {
+    Linux,
+    Normal,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum LoopControl {
+    Continue,
+    BreakFrame,
+    Quit,
+}
+
+fn max_cycle_reason(mode: TuiMode) -> &'static str {
+    match mode {
+        TuiMode::Linux => "达到最大周期数",
+        TuiMode::Normal => "Timeout",
+    }
+}
+
+fn finish_after_step(mode: TuiMode, state: &mut TuiState, hart: &Hart, bus: &Bus) -> bool {
+    match mode {
+        TuiMode::Linux => {
+            if hart.shutdown_requested() {
+                state.finish("SBI shutdown");
+                true
+            } else if hart.pc == 0 {
+                state.finish("Fatal: PC=0");
+                true
+            } else {
+                false
+            }
+        }
+        TuiMode::Normal => {
+            if let Some(val) = bus.tohost_value {
+                finish_normal_from_tohost(state, val);
+                true
+            } else if hart.pc == 0 {
+                state.finish("Fatal: PC=0");
+                true
+            } else {
+                false
+            }
+        }
+    }
+}
+
+fn run_emulator_step(mode: TuiMode, state: &mut TuiState, hart: &mut Hart, bus: &mut Bus) -> bool {
+    if state.cycle >= state.max_cycles {
+        state.finish(max_cycle_reason(mode));
+        return true;
+    }
+
+    hart.step(bus);
+    state.cycle += 1;
+    drain_uart_output(state, bus);
+    finish_after_step(mode, state, hart, bus)
+}
+
+fn restore_and_exit(
+    terminal: &mut Terminal<CrosstermBackend<Stdout>>,
+    state: &TuiState,
+    print_reason: bool,
+) {
+    restore_terminal(terminal).expect("无法恢复终端");
+    if print_reason && let Some(reason) = &state.finish_reason {
+        println!("TUI 结束：{} (cycle={})", reason, state.cycle);
+    }
+}
+
+fn apply_pending_action(
+    action: KeyAction,
+    terminal: &mut Terminal<CrosstermBackend<Stdout>>,
+    state: &mut TuiState,
+    bus: &mut Bus,
+) -> bool {
+    match action {
+        KeyAction::Quit => {
+            restore_and_exit(terminal, state, true);
+            return true;
+        }
+        KeyAction::TogglePause => state.running = !state.running,
+        KeyAction::ToggleInputMode => state.input_mode = !state.input_mode,
+        KeyAction::Step(n) => state.step_request = n,
+        KeyAction::Input(byte) => bus.uart.push_input(byte),
+        KeyAction::ScrollUp => state.scroll_up(),
+        KeyAction::ScrollDown => state.scroll_down(),
+        KeyAction::None => {}
+    }
+    false
+}
+
+fn apply_midframe_action(
+    action: KeyAction,
+    terminal: &mut Terminal<CrosstermBackend<Stdout>>,
+    state: &mut TuiState,
+    bus: &mut Bus,
+) -> LoopControl {
+    match action {
+        KeyAction::Quit => {
+            restore_and_exit(terminal, state, false);
+            LoopControl::Quit
+        }
+        KeyAction::TogglePause => {
+            state.running = false;
+            LoopControl::BreakFrame
+        }
+        KeyAction::ToggleInputMode => {
+            state.input_mode = !state.input_mode;
+            LoopControl::Continue
+        }
+        KeyAction::Input(byte) => {
+            bus.uart.push_input(byte);
+            LoopControl::Continue
+        }
+        KeyAction::ScrollUp => {
+            state.scroll_up();
+            LoopControl::Continue
+        }
+        KeyAction::ScrollDown => {
+            state.scroll_down();
+            LoopControl::Continue
+        }
+        KeyAction::Step(_) | KeyAction::None => LoopControl::Continue,
+    }
+}
+
+fn handle_pending_events(
+    terminal: &mut Terminal<CrosstermBackend<Stdout>>,
+    state: &mut TuiState,
+    bus: &mut Bus,
+) -> bool {
+    while event::poll(poll_timeout(state)).unwrap_or(false) {
+        if let Ok(Event::Key(key)) = event::read() {
+            let action = handle_key(key, state);
+            if apply_pending_action(action, terminal, state, bus) {
+                return true;
+            }
+        } else {
+            break;
+        }
+    }
+    false
+}
+
+fn handle_midframe_events(
+    terminal: &mut Terminal<CrosstermBackend<Stdout>>,
+    state: &mut TuiState,
+    bus: &mut Bus,
+) -> LoopControl {
+    if !event::poll(Duration::ZERO).unwrap_or(false) {
+        return LoopControl::Continue;
+    }
+    if let Ok(Event::Key(key)) = event::read() {
+        return apply_midframe_action(handle_key(key, state), terminal, state, bus);
+    }
+    LoopControl::Continue
+}
+
+fn run_requested_steps(mode: TuiMode, state: &mut TuiState, hart: &mut Hart, bus: &mut Bus) {
+    let steps = state.step_request;
+    state.step_request = 0;
+    for _ in 0..steps {
+        if run_emulator_step(mode, state, hart, bus) {
+            break;
+        }
+    }
+}
+
+fn run_active_frame(
+    mode: TuiMode,
+    terminal: &mut Terminal<CrosstermBackend<Stdout>>,
+    state: &mut TuiState,
+    hart: &mut Hart,
+    bus: &mut Bus,
+) -> bool {
+    let frame_start = Instant::now();
+    let mut steps_this_frame = 0u64;
+
+    loop {
+        if run_emulator_step(mode, state, hart, bus) {
+            break;
+        }
+        steps_this_frame += 1;
+
+        // release 模式下步进很快，固定间隔让出一次事件处理，避免按键饥饿。
+        if steps_this_frame % MIDFRAME_EVENT_INTERVAL == 0 {
+            match handle_midframe_events(terminal, state, bus) {
+                LoopControl::Quit => return true,
+                LoopControl::BreakFrame => break,
+                LoopControl::Continue => {}
+            }
+            if frame_start.elapsed() >= FRAME_BUDGET {
+                break;
+            }
+        }
+    }
+
+    false
+}
+
+/// Linux / 普通模式共用同一套 TUI 外壳，差异只体现在每步执行后的终止条件。
+fn run_tui(mode: TuiMode, hart: &mut Hart, bus: &mut Bus, max_cycles: u64) {
+    let mut terminal = setup_terminal().expect("无法初始化终端");
+    let mut state = TuiState::new(max_cycles);
+
+    loop {
+        terminal
+            .draw(|frame| draw_dashboard(frame, hart, bus, &state))
+            .expect("渲染失败");
+
+        if handle_pending_events(&mut terminal, &mut state, bus) {
+            return;
+        }
+
+        if state.finished {
+            continue;
+        }
+
+        if state.step_request > 0 && !state.running {
+            run_requested_steps(mode, &mut state, hart, bus);
+            continue;
+        }
+
+        if !state.running {
+            continue;
+        }
+
+        if run_active_frame(mode, &mut terminal, &mut state, hart, bus) {
+            return;
+        }
+    }
+}
+
 /// 初始化终端
 fn setup_terminal() -> io::Result<Terminal<CrosstermBackend<Stdout>>> {
     terminal::enable_raw_mode()?;
@@ -334,241 +568,12 @@ fn restore_terminal(terminal: &mut Terminal<CrosstermBackend<Stdout>>) -> io::Re
 
 /// TUI 主循环入口（Linux 模式）
 pub fn run_tui_linux(hart: &mut Hart, bus: &mut Bus, max_cycles: u64) {
-    let mut terminal = setup_terminal().expect("无法初始化终端");
-    let mut state = TuiState::new(max_cycles);
-
-    loop {
-        // 渲染
-        terminal
-            .draw(|frame| draw_dashboard(frame, hart, bus, &state))
-            .expect("渲染失败");
-
-        // 处理输入事件（drain 所有 pending 事件）
-        while event::poll(poll_timeout(&state)).unwrap_or(false) {
-            if let Ok(Event::Key(key)) = event::read() {
-                match handle_key(key, &state) {
-                    KeyAction::Quit => {
-                        restore_terminal(&mut terminal).expect("无法恢复终端");
-                        if let Some(reason) = &state.finish_reason {
-                            println!("TUI 结束：{} (cycle={})", reason, state.cycle);
-                        }
-                        return;
-                    }
-                    KeyAction::TogglePause => state.running = !state.running,
-                    KeyAction::ToggleInputMode => state.input_mode = !state.input_mode,
-                    KeyAction::Step(n) => state.step_request = n,
-                    KeyAction::Input(byte) => bus.uart.push_input(byte),
-                    KeyAction::ScrollUp => state.scroll_up(),
-                    KeyAction::ScrollDown => state.scroll_down(),
-                    KeyAction::None => {}
-                }
-            } else {
-                break;
-            }
-        }
-
-        if state.finished {
-            // 结束后等待用户按 q 退出
-            continue;
-        }
-
-        // 单步模式：暂停时执行请求的步数
-        if state.step_request > 0 && !state.running {
-            let steps = state.step_request;
-            state.step_request = 0;
-            for _ in 0..steps {
-                if state.cycle >= state.max_cycles {
-                    state.finish("达到最大周期数");
-                    break;
-                }
-                hart.step(bus);
-                state.cycle += 1;
-                drain_uart_output(&mut state, bus);
-                if hart.shutdown_requested() {
-                    state.finish("SBI shutdown");
-                    break;
-                }
-                if hart.pc == 0 {
-                    state.finish("Fatal: PC=0");
-                    break;
-                }
-            }
-            continue;
-        }
-
-        if !state.running {
-            continue;
-        }
-
-        // 执行 CPU 步进（用帧时间预算控制，自适应 debug/release 速度）
-        let frame_start = Instant::now();
-        let mut steps_this_frame = 0u64;
-
-        loop {
-            if state.cycle >= state.max_cycles {
-                state.finish("达到最大周期数");
-                break;
-            }
-
-            hart.step(bus);
-            state.cycle += 1;
-            steps_this_frame += 1;
-
-            drain_uart_output(&mut state, bus);
-
-            if hart.shutdown_requested() {
-                state.finish("SBI shutdown");
-                break;
-            }
-
-            if hart.pc == 0 {
-                state.finish("Fatal: PC=0");
-                break;
-            }
-
-            // 每隔固定步数检查一次按键，提高运行态响应速度
-            if steps_this_frame % MIDFRAME_EVENT_INTERVAL == 0 {
-                if event::poll(Duration::ZERO).unwrap_or(false) {
-                    if let Ok(Event::Key(key)) = event::read() {
-                        match handle_key(key, &state) {
-                            KeyAction::Quit => {
-                                restore_terminal(&mut terminal).expect("无法恢复终端");
-                                return;
-                            }
-                            KeyAction::TogglePause => {
-                                state.running = false;
-                                break;
-                            }
-                            KeyAction::ToggleInputMode => state.input_mode = !state.input_mode,
-                            KeyAction::Input(byte) => bus.uart.push_input(byte),
-                            KeyAction::ScrollUp => state.scroll_up(),
-                            KeyAction::ScrollDown => state.scroll_down(),
-                            _ => {}
-                        }
-                    }
-                }
-                // 帧时间预算用完则让出渲染
-                if frame_start.elapsed() >= FRAME_BUDGET {
-                    break;
-                }
-            }
-        }
-    }
+    run_tui(TuiMode::Linux, hart, bus, max_cycles);
 }
 
 /// TUI 主循环入口（普通模式）
 pub fn run_tui_normal(hart: &mut Hart, bus: &mut Bus, max_cycles: u64) {
-    let mut terminal = setup_terminal().expect("无法初始化终端");
-    let mut state = TuiState::new(max_cycles);
-
-    loop {
-        terminal
-            .draw(|frame| draw_dashboard(frame, hart, bus, &state))
-            .expect("渲染失败");
-
-        // 处理输入事件（drain 所有 pending 事件）
-        while event::poll(poll_timeout(&state)).unwrap_or(false) {
-            if let Ok(Event::Key(key)) = event::read() {
-                match handle_key(key, &state) {
-                    KeyAction::Quit => {
-                        restore_terminal(&mut terminal).expect("无法恢复终端");
-                        if let Some(reason) = &state.finish_reason {
-                            println!("TUI 结束：{} (cycle={})", reason, state.cycle);
-                        }
-                        return;
-                    }
-                    KeyAction::TogglePause => state.running = !state.running,
-                    KeyAction::ToggleInputMode => state.input_mode = !state.input_mode,
-                    KeyAction::Step(n) => state.step_request = n,
-                    KeyAction::Input(byte) => bus.uart.push_input(byte),
-                    KeyAction::ScrollUp => state.scroll_up(),
-                    KeyAction::ScrollDown => state.scroll_down(),
-                    KeyAction::None => {}
-                }
-            } else {
-                break;
-            }
-        }
-
-        if state.finished {
-            continue;
-        }
-
-        // 单步模式
-        if state.step_request > 0 && !state.running {
-            let steps = state.step_request;
-            state.step_request = 0;
-            for _ in 0..steps {
-                if state.cycle >= state.max_cycles {
-                    state.finish("Timeout");
-                    break;
-                }
-                hart.step(bus);
-                state.cycle += 1;
-                drain_uart_output(&mut state, bus);
-                if let Some(val) = bus.tohost_value {
-                    finish_normal_from_tohost(&mut state, val);
-                    break;
-                }
-            }
-            continue;
-        }
-
-        if !state.running {
-            continue;
-        }
-
-        let frame_start = Instant::now();
-        let mut steps_this_frame = 0u64;
-        loop {
-            if state.cycle >= state.max_cycles {
-                state.finish("Timeout");
-                break;
-            }
-
-            hart.step(bus);
-            state.cycle += 1;
-            steps_this_frame += 1;
-
-            drain_uart_output(&mut state, bus);
-
-            if let Some(val) = bus.tohost_value {
-                finish_normal_from_tohost(&mut state, val);
-                break;
-            }
-
-            if hart.pc == 0 {
-                state.finish("Fatal: PC=0");
-                break;
-            }
-
-            // 每隔固定步数检查一次按键，避免 release 模式下输入滞后
-            if steps_this_frame % MIDFRAME_EVENT_INTERVAL == 0 {
-                if event::poll(Duration::ZERO).unwrap_or(false) {
-                    if let Ok(Event::Key(key)) = event::read() {
-                        match handle_key(key, &state) {
-                            KeyAction::Quit => {
-                                restore_terminal(&mut terminal).expect("无法恢复终端");
-                                return;
-                            }
-                            KeyAction::TogglePause => {
-                                state.running = false;
-                                break;
-                            }
-                            KeyAction::ToggleInputMode => state.input_mode = !state.input_mode,
-                            KeyAction::Input(byte) => bus.uart.push_input(byte),
-                            KeyAction::ScrollUp => state.scroll_up(),
-                            KeyAction::ScrollDown => state.scroll_down(),
-                            _ => {}
-                        }
-                    }
-                }
-                if frame_start.elapsed() >= FRAME_BUDGET {
-                    break;
-                }
-            }
-        }
-    }
+    run_tui(TuiMode::Normal, hart, bus, max_cycles);
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
