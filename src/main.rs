@@ -339,6 +339,7 @@ fn parse_mode(args: &[String]) -> Mode {
 }
 
 /// TUI 默认应持续运行直到用户主动退出；只有显式传入 --cycles 时才保留上限。
+#[cfg(feature = "tui")]
 fn resolve_tui_cycles(max_cycles: u64, default_cycles: u64) -> u64 {
     if max_cycles == default_cycles {
         u64::MAX

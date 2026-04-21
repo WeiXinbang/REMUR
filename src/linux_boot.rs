@@ -21,9 +21,10 @@ use crate::memory;
 use crate::tui;
 use crate::{
     COUNTER_EN_TM_IR, DEFAULT_DTB_ADDR, DEFAULT_INITRAMFS_ADDR, DEFAULT_KERNEL_ADDR,
-    DEFAULT_LINUX_BOOTARGS, DEFAULT_LINUX_MAX_CYCLES, DELEGATE_EXCEPTIONS_TO_S, LinuxOptions,
-    MEM_SIZE, resolve_tui_cycles,
+    DEFAULT_LINUX_BOOTARGS, DELEGATE_EXCEPTIONS_TO_S, LinuxOptions, MEM_SIZE,
 };
+#[cfg(feature = "tui")]
+use crate::{DEFAULT_LINUX_MAX_CYCLES, resolve_tui_cycles};
 
 const PREBUILT_RELEASES_URL: &str =
     "https://api.github.com/repos/sysprog21/rv32emu-prebuilt/releases?per_page=100";
