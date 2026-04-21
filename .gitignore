@@ -7,6 +7,7 @@ tests/bins/
 # 测试框架（由脚本自动 clone）
 /riscv-tests/
 /riscv-arch-test/
+/rvos.elf
 
 # IDE
 .vscode/

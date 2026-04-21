@@ -94,12 +94,19 @@ fn usage_and_exit() -> ! {
     eprintln!(
         "  --cycles <n>                 最大执行周期数（普通模式默认 10M，Linux 模式默认 200M）"
     );
+<<<<<<< Updated upstream
+=======
+    eprintln!("  --no-limit                   不限制执行周期数（运行直到程序结束）");
+    eprintln!("  --tui                        TUI 仪表盘模式（需要 --features tui 编译）");
+>>>>>>> Stashed changes
     eprintln!("  --itrace                     输出指令级 trace（M7）");
     eprintln!("  --itrace-file <path>         将 trace 写入文件（默认 stderr）");
     eprintln!("  --itrace-limit <n>           最多输出 n 条 trace");
     eprintln!("  --difftest-ref <path>        与参考 trace 逐步对比（M7 最小 difftest）");
     eprintln!("  --difftest-ref-cmd <cmd>     先运行外部命令生成参考 trace（M7.2）");
-    eprintln!("  --difftest-ref-out <path>    外部命令输出参考 trace 路径（默认 target\\trace\\difftest.ref）");
+    eprintln!(
+        "  --difftest-ref-out <path>    外部命令输出参考 trace 路径（默认 target\\trace\\difftest.ref）"
+    );
     eprintln!();
     eprintln!("Normal mode options:");
     eprintln!("  --tohost <hex_addr>          tohost 地址（raw .bin 用），ELF 自动解析");
@@ -188,8 +195,11 @@ fn parse_mode(args: &[String]) -> Mode {
                         .parse::<u64>()
                         .unwrap_or_else(|_| panic!("Invalid --cycles: {}", v));
                 }
+                "--no-limit" => max_cycles = u64::MAX,
                 "--itrace" => debug.itrace = true,
-                "--itrace-file" => debug.itrace_file = Some(take_next(args, &mut i, "--itrace-file")),
+                "--itrace-file" => {
+                    debug.itrace_file = Some(take_next(args, &mut i, "--itrace-file"))
+                }
                 "--itrace-limit" => {
                     let v = take_next(args, &mut i, "--itrace-limit");
                     debug.itrace_limit = Some(
@@ -257,8 +267,11 @@ fn parse_mode(args: &[String]) -> Mode {
                         .parse::<u64>()
                         .unwrap_or_else(|_| panic!("Invalid --cycles: {}", v));
                 }
+                "--no-limit" => max_cycles = u64::MAX,
                 "--itrace" => debug.itrace = true,
-                "--itrace-file" => debug.itrace_file = Some(take_next(args, &mut i, "--itrace-file")),
+                "--itrace-file" => {
+                    debug.itrace_file = Some(take_next(args, &mut i, "--itrace-file"))
+                }
                 "--itrace-limit" => {
                     let v = take_next(args, &mut i, "--itrace-limit");
                     debug.itrace_limit = Some(
@@ -318,7 +331,11 @@ fn default_difftest_ref_out() -> String {
         .into_owned()
 }
 
-fn run_difftest_ref_command(command: &str, out_path: &str, ctx: &DifftestContext<'_>) -> Result<(), String> {
+fn run_difftest_ref_command(
+    command: &str,
+    out_path: &str,
+    ctx: &DifftestContext<'_>,
+) -> Result<(), String> {
     if let Some(parent) = Path::new(out_path).parent()
         && !parent.as_os_str().is_empty()
     {
@@ -542,7 +559,7 @@ fn parse_diff_event_line(line: &str, line_no: usize) -> Result<Option<DiffEvent>
                     return Err(format!(
                         "line {}: invalid trap type '{}' (expected int/exc)",
                         line_no, other
-                    ))
+                    ));
                 }
             };
             Ok(Some(DiffEvent::Trap {
@@ -623,8 +640,8 @@ impl DebugRuntime {
                 let reader = BufReader::new(file);
                 let mut events = Vec::new();
                 for (i, line) in reader.lines().enumerate() {
-                    let line = line
-                        .map_err(|e| format!("cannot read difftest ref '{}': {}", path, e))?;
+                    let line =
+                        line.map_err(|e| format!("cannot read difftest ref '{}': {}", path, e))?;
                     if let Some(event) = parse_diff_event_line(&line, i + 1)? {
                         events.push(event);
                     }
@@ -728,7 +745,13 @@ fn run_normal_mode(opts: NormalOptions) {
     #[cfg(feature = "tui")]
     if opts.tui {
         bus.uart.enable_capture();
-        tui::run_tui_normal(&mut hart, &mut bus, opts.max_cycles);
+        // TUI 模式默认无限制（用户可手动退出）
+        let tui_cycles = if opts.max_cycles == DEFAULT_MAX_CYCLES {
+            u64::MAX
+        } else {
+            opts.max_cycles
+        };
+        tui::run_tui_normal(&mut hart, &mut bus, tui_cycles);
         return;
     }
     #[cfg(not(feature = "tui"))]
@@ -1077,7 +1100,10 @@ fn run_linux_mode(opts: LinuxOptions) {
     let mut hart = cpu::Hart::new();
     hart.pc = kernel_entry;
     hart.privilege = 1; // Linux 内核运行在 S-mode
-    bus.uart.enable_host_input();
+    // TUI 模式下不启用 stdin 桥接（由 TUI 自行处理键盘输入）
+    if !use_tui {
+        bus.uart.enable_host_input();
+    }
     hart.enable_sbi(true);
     hart.write_reg(10, 0); // a0 = hartid
     hart.write_reg(11, dtb_addr); // a1 = FDT physical address
@@ -1098,7 +1124,13 @@ fn run_linux_mode(opts: LinuxOptions) {
     #[cfg(feature = "tui")]
     if use_tui {
         bus.uart.enable_capture();
-        tui::run_tui_linux(&mut hart, &mut bus, max_cycles);
+        // TUI 模式默认无限制（用户可手动退出）
+        let tui_cycles = if max_cycles == DEFAULT_LINUX_MAX_CYCLES {
+            u64::MAX
+        } else {
+            max_cycles
+        };
+        tui::run_tui_linux(&mut hart, &mut bus, tui_cycles);
         return;
     }
     #[cfg(not(feature = "tui"))]
