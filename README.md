@@ -12,21 +12,17 @@
 | M4: 性能优化     | ✅ 完成 | criterion + 译码缓存 + u8 寄存器索引 |
 | M5: SoC 外设     | ✅ 完成 | CLINT + PLIC + UART + ELF 加载器 + arch-test 适配 |
 | M6: 启动 Linux   | ✅ 完成 | 内嵌 SBI + DTB(可生成) + 内核/initramfs 加载 |
-| M7: 调试/测试    | ✅ M7.1 已完成 | itrace + 最小 difftest（参考 trace 对拍） |
+| M7: 调试/测试    | ✅ M7.2 已完成 | itrace + difftest + 外部参考 trace 生成命令链路 |
 | M8: 高级优化(可选) | ⏸ 暂缓 | 基本块缓存/JIT，等 M7 稳定后再做 |
 
 ## 测试结果
 
-```
-rv32ui-p (RV32I):  37/37 ✅
-rv32um-p (RV32M):   8/8  ✅
-rv32ua-p (RV32A):  10/10 ✅
-rv32mi-p (M-mode): 16/16 ✅
-rv32si-p (S-mode):  6/6  ✅
-peripherals:        7/7  ✅
-─────────────────────────
-总计:              84/84 ✅
-```
+`cargo test` 现在覆盖：
+
+- riscv-tests 用户态/特权测试：`rv32ui` / `rv32um` / `rv32ua` / `rv32mi` / `rv32si`
+- 裸机外设集成测试：`peripherals`
+- SBI / Linux 启动最小闭环测试
+- riscv-arch-test 合规测试（自动 clone + 编译 + 签名对比）
 
 ## 快速开始
 
@@ -147,8 +143,7 @@ cargo run --features tui -- tests/bins/rv32ui-p-add.elf --tui
 
 ### M7 / M8 是否现在开做
 
-- **M7.1 已落地**：`--itrace`/`--itrace-file`/`--itrace-limit` 可输出指令级 trace；`--difftest-ref` 可按事件逐步对拍参考 trace。
-- **M7.2 已接线（最小版）**：支持 `--difftest-ref-cmd` 在运行前自动生成参考 trace，再交给 `--difftest-ref` 对拍。
+- **M7.2 已落地**：`--itrace`/`--itrace-file`/`--itrace-limit` 可输出指令级 trace；`--difftest-ref` / `--difftest-ref-cmd` / `--difftest-ref-out` 已形成最小对拍闭环。
 - **建议暂缓 M8**：当前瓶颈还不是解释器吞吐，过早上基本块缓存/JIT 会放大调试成本；等 M7 稳定后再做优化更稳妥。
 - **进入 M8 的门槛**：M7 工具可稳定复现问题、Linux 启动回归可自动化、再开始做性能 A/B（如 `cargo bench` 基线对比）。
 
@@ -172,21 +167,42 @@ cargo run -- tests/bins/rv32ui-p-add.elf --difftest-ref-cmd "bash scripts/gen_sp
 
 ```
 src/
-├── main.rs          # CLI 入口
-├── lib.rs           # 库导出（供集成测试用）
-├── cpu.rs           # Hart：寄存器、CSR、trap/mret
+├── main.rs          # CLI 参数解析、模式分发、签名导出
+├── linux_boot.rs    # Linux 下载/布局/装载/headless/TUI 路由
+├── debug_trace.rs   # itrace / difftest / 参考 trace 生成
+├── tui.rs           # 终端仪表盘（feature = "tui"）
+├── cpu.rs           # Hart：CSR、trap、Sv32、SBI、step 主循环
+├── bus.rs           # 设备路由
+├── clint.rs         # 定时器 / 软件中断
+├── plic.rs          # 外部中断控制器
+├── uart.rs          # UART 16550 子集
+├── dtb.rs           # 默认 / rv32emu 兼容 DTB 生成
+├── loader.rs        # ELF/bin 加载器
 ├── decode.rs        # 指令译码
 ├── instruction.rs   # 指令枚举 + 子操作枚举
 ├── memory.rs        # 物理内存（可配置基址）
+├── lib.rs           # bench / 测试复用导出
 └── execute/
     └── mod.rs       # 指令执行（RV32I/M/A/Zicsr）
 tests/
+├── common/          # 共享测试辅助函数
 ├── bins/            # 预编译的 riscv-tests 二进制
-├── rv32ui.rs        # RV32I 集成测试 (37 cases)
-├── rv32um.rs        # RV32M 集成测试 (8 cases)
-└── rv32ua.rs        # RV32A 集成测试 (10 cases)
+├── rv32ui.rs        # RV32I 集成测试
+├── rv32um.rs        # RV32M 集成测试
+├── rv32ua.rs        # RV32A 集成测试
+├── rv32mi.rs        # M-mode 特权测试
+├── rv32si.rs        # S-mode 特权测试
+├── peripherals.rs   # UART / CLINT / PLIC 集成测试
+├── sbi.rs           # SBI 行为测试
+├── linux_boot.rs    # Linux 启动最小闭环测试
+└── arch_framework.rs# riscv-arch-test 合规框架
 scripts/
-└── compile_tests.sh # 编译 riscv-tests 的脚本
+├── compile_tests.sh # 编译 riscv-tests 的脚本
+├── setup_tests.ps1  # Windows 下准备测试二进制
+├── run_linux.ps1    # Linux 启动包装脚本
+├── run-arch-test.sh # arch-test 执行入口
+├── gen_spike_ref.sh # 生成 Spike 参考 trace
+└── spike_to_remur_trace.py # Spike -> REMUR trace 格式转换
 ```
 
 ## 架构设计

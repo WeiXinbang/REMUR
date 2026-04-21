@@ -1,3 +1,8 @@
+//! Hart 核心实现：
+//! - 通用寄存器 / CSR / 特权级状态
+//! - trap / 中断 / SBI / Sv32 地址翻译
+//! - `step()` 单步执行主循环与调试快照导出
+
 #![allow(dead_code)]
 
 use crate::bus::Bus;

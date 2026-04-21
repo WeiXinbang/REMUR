@@ -1,3 +1,8 @@
+//! 二进制入口：
+//! - 解析普通模式 / Linux 模式 CLI 参数
+//! - 把 Linux 启动、difftest/itrace、TUI 分流到各自模块
+//! - 保留 arch-test 所需的签名导出辅助逻辑
+
 use std::env;
 use std::fs;
 use std::io::Write;
